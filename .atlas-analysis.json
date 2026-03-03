@@ -1,0 +1,83 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "web-to-markdown",
+  "projectDescription": "A Python library that fetches any webpage and returns clean, content-focused markdown with automatic JavaScript rendering support",
+  "theme": "palm",
+  "primaryColor": "#3B82F6",
+  "lightColor": "#60A5FA",
+  "darkColor": "#2563EB",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "how-it-works",
+              "fetch-strategies",
+              "error-handling"
+            ]
+          },
+          {
+            "group": "Usage",
+            "pages": [
+              "usage/python-api",
+              "usage/cli",
+              "usage/framework-adapters"
+            ]
+          },
+          {
+            "group": "Framework Integration",
+            "pages": [
+              "frameworks/agno",
+              "frameworks/langchain",
+              "frameworks/crewai",
+              "frameworks/openai"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Functions",
+            "pages": [
+              "api/fetch-as-markdown",
+              "api/fetch-api-spec"
+            ]
+          },
+          {
+            "group": "Toolkits",
+            "pages": [
+              "api/agno-toolkit"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Two-stage fetch strategy with automatic JS-rendering fallback",
+    "Content extraction using Firefox Reader Mode algorithm",
+    "60-80% token reduction compared to raw HTML",
+    "Framework-agnostic core with adapters for Agno, LangChain, CrewAI, and OpenAI",
+    "Intelligent API spec detection returning raw JSON/YAML when available",
+    "Error-as-string pattern for agent-friendly error handling"
+  ],
+  "publicApiSurface": [
+    "fetch_as_markdown(url, playwright_first=False)",
+    "fetch_api_spec(url)",
+    "WebToMarkdownTools (Agno toolkit)",
+    "CLI: python scripts/fetch_as_markdown.py <url> [--playwright-first] [--api-spec] [--output]"
+  ]
+}
