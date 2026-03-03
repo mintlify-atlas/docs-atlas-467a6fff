@@ -1,0 +1,241 @@
+---
+title: How It Works
+description: Understanding the two-stage fetch strategy, readability algorithm, and content processing pipeline
+---
+
+## Overview
+
+web-to-markdown transforms any webpage into clean, agent-friendly markdown through a multi-stage pipeline that intelligently handles both static and JavaScript-rendered content.
+
+## Two-Stage Fetch Strategy
+
+The system uses an adaptive approach that balances speed with reliability:
+
+```
+fetch_as_markdown(url)
+  │
+  ├─ Stage 1: Static Fetch (~1s)
+  │    └─ readability → html2text → clean markdown
+  │         ├─ ≥200 chars of real text? → ✓ Return it
+  │         └─ Thin/empty content?      → ↓ Continue
+  │
+  └─ Stage 2: Playwright Fetch (~5-8s)
+       └─ readability → html2text → clean markdown
+            ├─ Enough content? → ✓ Return it
+            └─ Still empty?    → ✗ ERROR: login wall or bot block
+```
+
+### Stage 1: Static Fetch
+
+The first attempt uses a standard HTTP request with browser-like headers:
+
+```python
+def _static_fetch(url: str, timeout: int = 15) -> str | None:
+    """Fast HTTP fetch. Sends a browser-like User-Agent to avoid basic bot blocks."""
+    try:
+        r = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; WebToMarkdown/1.0)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }, timeout=timeout)
+        r.raise_for_status()
+        return r.text
+    except Exception:
+        return None
+```
+
+<Note>
+The User-Agent header is set to identify as a compatible browser, which helps bypass basic bot detection while being transparent about the tool's purpose.
+</Note>
+
+**Why start with static fetch?**
+- **Speed**: ~1 second vs ~5-8 seconds for headless browser
+- **Resource efficiency**: No Chromium process or JavaScript execution
+- **Sufficient for most pages**: Traditional server-rendered sites, documentation, blogs
+
+### Stage 2: Playwright Fallback
+
+If static fetch returns thin content (less than 200 characters), the system automatically falls back to a headless Chromium browser:
+
+```python
+def _playwright_fetch(url: str, wait_ms: int = 3000) -> str | None:
+    """
+    Headless Chromium fetch. Used when static fetch returns thin content.
+    The wait_ms gives JS frameworks time to finish rendering after load.
+    """
+    if not PLAYWRIGHT_AVAILABLE:
+        return None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(wait_ms)  # Give JS time to render
+            html = page.content()
+            browser.close()
+            return html
+    except Exception:
+        return None
+```
+
+<Info>
+The 3-second wait after `networkidle` ensures JavaScript frameworks like React, Vue, or Angular have time to complete client-side rendering.
+</Info>
+
+**When Playwright is triggered:**
+- Single-page applications (SPAs)
+- JavaScript-gated content
+- Dynamic documentation sites
+- Swagger UI / API explorers
+
+## Readability Algorithm
+
+web-to-markdown uses the same content extraction algorithm as **Firefox Reader Mode** via the `readability-lxml` library:
+
+```python
+def _extract_main_content(html: str) -> str:
+    """
+    Strip nav, ads, sidebars, and footers using the readability algorithm.
+    This is the same approach Firefox Reader Mode uses, which means it's
+    battle-tested across millions of real-world pages. Falls back to full
+    HTML if readability isn't installed.
+    """
+    if READABILITY_AVAILABLE:
+        try:
+            return Document(html).summary(html_partial=True)
+        except Exception:
+            pass
+    return html
+```
+
+### What Gets Removed
+
+The algorithm strips common webpage boilerplate:
+- Navigation menus and headers
+- Cookie consent banners
+- Advertisement containers
+- Sidebars and widgets
+- Footer content
+- Social media buttons
+- Related article suggestions
+
+### Result: 60-80% Token Reduction
+
+By removing noise and keeping only the main content, you typically see:
+- **Before**: 50KB of raw HTML with navigation, ads, scripts
+- **After**: 10-15KB of clean markdown with just the article content
+
+<Tip>
+This token reduction is crucial for agents working with API rate limits or context window constraints.
+</Tip>
+
+## HTML to Markdown Conversion
+
+After readability extraction, HTML is converted to markdown using `html2text` with agent-optimized settings:
+
+```python
+def _html_to_markdown(html: str) -> str:
+    """Convert HTML to markdown. Images are skipped — they're noise for agents."""
+    converter = html2text.HTML2Text()
+    converter.ignore_links = False      # Keep links — they're useful context
+    converter.ignore_images = True      # Skip images — noise for agents
+    converter.ignore_emphasis = False   # Preserve bold/italic formatting
+    converter.body_width = 0            # No line wrapping
+    converter.skip_internal_links = True  # Skip anchor links
+    converter.single_line_break = True  # Use single newlines
+    return converter.handle(html).strip()
+```
+
+### Conversion Settings Explained
+
+| Setting | Value | Reason |
+|---------|-------|--------|
+| `ignore_images` | `True` | Images can't be processed by most text-based agents and inflate token counts |
+| `ignore_links` | `False` | Links provide valuable context and navigation paths |
+| `body_width` | `0` | Prevents artificial line breaks that confuse agents |
+| `skip_internal_links` | `True` | Anchor links (#section) are less useful than full URLs |
+
+## Thin Content Detection
+
+The system uses a **200-character threshold** to detect pages that didn't render useful content:
+
+```python
+def _is_thin_content(markdown: str, threshold: int = 200) -> bool:
+    """
+    Detect JS-gated shells and empty responses.
+    Less than 200 chars of real text after whitespace collapse means
+    the page didn't actually render any content worth returning.
+    """
+    return len(re.sub(r'\s+', ' ', markdown).strip()) < threshold
+```
+
+### Why 200 Characters?
+
+This threshold is calibrated to:
+- ✓ **Catch JavaScript shells**: `<div id="root"></div>` with no rendered content
+- ✓ **Catch error pages**: "404 Not Found" or "Access Denied" messages
+- ✓ **Allow short legitimate pages**: Brief error messages, simple confirmations
+- ✗ **Avoid false positives**: Legitimately short documentation pages with 2-3 paragraphs
+
+<Warning>
+Pages with less than 200 characters after whitespace normalization trigger the Playwright fallback. If both fetches return thin content, an error is returned.
+</Warning>
+
+### Whitespace Normalization
+
+The threshold counts characters **after collapsing whitespace**:
+
+```python
+re.sub(r'\s+', ' ', markdown).strip()
+```
+
+This means:
+- Multiple spaces → single space
+- Newlines, tabs → single space
+- Leading/trailing whitespace → removed
+
+**Example:**
+```
+Original: "\n\n  Hello    World  \n\n"
+Normalized: "Hello World"
+Character count: 11
+```
+
+## Post-Processing
+
+Final cleanup removes common markdown noise patterns:
+
+```python
+def _clean_markdown(markdown: str) -> str:
+    """Post-process to remove common noise patterns from converted markdown."""
+    markdown = re.sub(r'\n{3,}', '\n\n', markdown)  # Collapse excessive blank lines
+    markdown = re.sub(r'^\W{3,}$', '', markdown, flags=re.MULTILINE)  # Remove decorative dividers
+    return markdown.strip()
+```
+
+**Patterns removed:**
+- Three or more consecutive newlines → two newlines
+- Decorative dividers like `---`, `***`, `___` → removed
+- Leading and trailing whitespace → stripped
+
+## Complete Pipeline Example
+
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+# Fetch a documentation page
+markdown = fetch_as_markdown("https://docs.example.com/api")
+
+# Behind the scenes:
+# 1. Static fetch with browser headers (~1s)
+# 2. Extract main content with readability algorithm
+# 3. Convert HTML to markdown
+# 4. Check if content is thin (<200 chars)
+# 5. If thin, retry with Playwright (~5-8s)
+# 6. Apply final cleanup
+# 7. Return clean markdown or ERROR: message
+```
+
+<Info>
+The entire pipeline is transparent to the caller — you just get markdown or an error string. No exceptions to catch.
+</Info>

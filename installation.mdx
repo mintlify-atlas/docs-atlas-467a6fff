@@ -1,0 +1,83 @@
+---
+title: Installation
+description: Install web-to-markdown and its dependencies to start converting webpages to clean markdown
+---
+
+# Installation
+
+Get web-to-markdown set up in your Python environment with all required dependencies.
+
+## Requirements
+
+<Note>
+  **Python 3.10 or higher** is required for web-to-markdown.
+</Note>
+
+## Installation Steps
+
+<Steps>
+  <Step title="Install Core Dependencies">
+    Install the required Python packages using pip:
+
+    ```bash
+    pip install requests readability-lxml html2text playwright
+    ```
+
+    These packages provide:
+    - `requests` — Fast static HTTP fetching
+    - `readability-lxml` — Boilerplate stripping using the Firefox Reader Mode algorithm
+    - `html2text` — Clean HTML to markdown conversion
+    - `playwright` — Headless browser fallback for JavaScript-rendered pages
+  </Step>
+
+  <Step title="Install Playwright Browser">
+    Download the Chromium browser for Playwright (one-time ~200MB download):
+
+    ```bash
+    playwright install chromium
+    ```
+
+    This browser is only used when a JavaScript-rendered page is encountered. The skill automatically falls back to it when static fetching returns thin content.
+  </Step>
+
+  <Step title="Verify Installation">
+    Test that everything is working by running the CLI:
+
+    ```bash
+    python scripts/fetch_as_markdown.py https://example.com
+    ```
+
+    You should see clean markdown output of the Example Domain page.
+  </Step>
+</Steps>
+
+## Optional Dependencies
+
+<Warning>
+  Playwright is technically **optional** but highly recommended. Without it, you'll only be able to fetch static HTML pages — any JavaScript-rendered site will return an error with instructions on what to install.
+</Warning>
+
+If you encounter a JavaScript-heavy page without Playwright installed, you'll see:
+
+```
+ERROR: Page appears JavaScript-rendered but Playwright is not installed.
+Run: pip install playwright && playwright install chromium
+```
+
+This graceful degradation lets you start with minimal dependencies and add Playwright only when needed.
+
+## Development Installation
+
+If you're contributing to web-to-markdown or running the test suite:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+This includes all runtime dependencies plus testing tools like pytest.
+
+## Next Steps
+
+<Card title="Quick Start" icon="rocket" href="/quickstart">
+  Learn how to fetch your first webpage with real code examples
+</Card>

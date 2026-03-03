@@ -1,0 +1,83 @@
+---
+title: Introduction
+description: Transform any webpage into clean, agent-ready markdown with intelligent JavaScript handling and 60-80% token reduction
+---
+
+# Web-to-Markdown
+
+An agent skill that fetches any webpage and returns clean, content-focused markdown — handling JavaScript-rendered pages automatically so your agent never has to.
+
+## The Problem
+
+Raw HTML is a terrible format for agents. It's bloated with nav menus, cookie banners, sidebars, and scripts that have nothing to do with the actual content. And on modern sites, a plain HTTP request often returns an empty JavaScript shell — the agent sees nothing useful and either halluinates or gives up.
+
+## The Solution
+
+This skill solves both problems with a two-stage fetch strategy:
+
+1. **Fast static request first** (~1s) — works for most traditional sites
+2. **Automatic headless browser fallback** (~5-8s) — handles JavaScript-rendered content when needed
+3. **Intelligent content extraction** — strips boilerplate using the same algorithm as Firefox Reader Mode
+4. **Clean markdown conversion** — returns only the content that matters
+
+The result: **60–80% fewer tokens** than raw HTML, with only the content that matters.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Two-Stage Fetch Strategy" icon="bolt">
+    Fast static HTTP first, automatic Playwright fallback for JS-heavy pages. Your agent never has to decide which method to use.
+  </Card>
+  
+  <Card title="Battle-Tested Content Extraction" icon="filter">
+    Uses the Firefox Reader Mode algorithm (readability-lxml) to strip navigation, ads, sidebars, and other boilerplate from millions of real-world pages.
+  </Card>
+  
+  <Card title="Massive Token Reduction" icon="chart-line">
+    60-80% fewer tokens than raw HTML by removing scripts, styles, navigation menus, cookie banners, and other noise.
+  </Card>
+  
+  <Card title="Framework Agnostic" icon="puzzle-piece">
+    Core script has zero framework dependencies. Wrap in 5-10 lines for Agno, LangChain, CrewAI, OpenAI Agents SDK, or any other framework.
+  </Card>
+  
+  <Card title="Graceful Error Handling" icon="circle-check">
+    Errors returned as strings prefixed with "ERROR:" rather than raised exceptions — agents can handle them inline without try/catch.
+  </Card>
+  
+  <Card title="API-Spec Aware" icon="code">
+    Automatically detects and returns raw JSON/YAML for OpenAPI specs when the server provides them, falling back to markdown conversion only when needed.
+  </Card>
+</CardGroup>
+
+## How It Works
+
+The two-stage fetch strategy intelligently handles both static and JavaScript-rendered pages:
+
+```
+fetch_as_markdown(url)
+  │
+  ├─ Static fetch (fast, ~1s)
+  │    └─ readability → html2text → clean markdown
+  │         ├─ ≥200 chars of real text? → return it
+  │         └─ Thin/empty?              → fall through ↓
+  │
+  └─ Playwright fetch (headless Chromium, ~5-8s)
+       └─ readability → html2text → clean markdown
+            ├─ Enough content? → return it
+            └─ Still empty?    → ERROR: login wall or bot block
+```
+
+"Thin content" means less than 200 characters after whitespace normalization. This catches JS-gated shells without falsely flagging legitimately short pages.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install Python dependencies and set up Playwright for JavaScript-rendered pages
+  </Card>
+  
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get up and running in 2 minutes with real working examples
+  </Card>
+</CardGroup>

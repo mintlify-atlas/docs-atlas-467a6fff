@@ -1,0 +1,162 @@
+---
+title: 'fetch_api_spec'
+description: 'Fetch API documentation with automatic detection of raw OpenAPI/Swagger specs'
+---
+
+## Function Signature
+
+```python
+def fetch_api_spec(url: str) -> str
+```
+
+Fetch API documentation or an OpenAPI/Swagger spec. Intelligently detects when the server returns raw JSON or YAML specs and returns them directly without markdown conversion, since agents can often work with OpenAPI specs natively.
+
+## Parameters
+
+<ParamField path="url" type="str" required>
+  URL of the API docs page or raw spec file (e.g., `https://api.example.com/openapi.json` or `https://docs.example.com/api-reference`)
+</ParamField>
+
+## Return Value
+
+<ResponseField name="return" type="str">
+  Returns one of:
+  - **Raw spec** (JSON/YAML) if the server's `Content-Type` header indicates structured data
+  - **Clean markdown** of the documentation page if HTML is returned
+  - **Error message** prefixed with `"ERROR:"` if fetch fails (see [`fetch_as_markdown`](/api/fetch-as-markdown) error handling)
+</ResponseField>
+
+## Behavior
+
+### Content-Type Detection Strategy
+
+1. **Check Content-Type header first**
+   - Sends HTTP request with `Accept: application/json,application/yaml,text/yaml,text/html`
+   - Examines response `Content-Type` header
+   - If header contains `application/json`, `yaml`, or `text/plain`, returns raw response body immediately
+   - This preserves the original spec format for agent consumption
+
+2. **Fallback to markdown conversion**
+   - If Content-Type indicates HTML or the header check fails, calls `fetch_as_markdown(url)`
+   - Uses full two-stage fetch strategy (static → Playwright fallback)
+   - Returns cleaned markdown version of the documentation page
+
+### Why This Matters
+
+Many AI agents and LLM tools can parse OpenAPI/Swagger specs natively. Returning the raw JSON/YAML spec instead of converting it to markdown:
+- Preserves all structured information (schemas, examples, parameter types)
+- Avoids lossy HTML → markdown conversion
+- Enables programmatic API client generation
+- Reduces token usage when passing to LLMs
+
+## Examples
+
+### Fetching Raw OpenAPI Spec
+
+```python
+from scripts.fetch_as_markdown import fetch_api_spec
+
+# Server returns application/json → raw spec returned
+spec = fetch_api_spec("https://api.github.com/openapi.json")
+print(spec)  # Raw JSON OpenAPI spec
+
+import json
+openapi_doc = json.loads(spec)
+print(openapi_doc["info"]["title"])
+```
+
+### Fetching HTML API Docs
+
+```python
+# Server returns text/html → markdown conversion applied
+markdown = fetch_api_spec("https://docs.stripe.com/api")
+print(markdown)  # Clean markdown of the docs page
+```
+
+### Handling Both Cases
+
+```python
+import json
+
+result = fetch_api_spec("https://example.com/api-docs")
+
+if result.startswith("ERROR:"):
+    print(f"Fetch failed: {result}")
+else:
+    # Try parsing as JSON first
+    try:
+        spec = json.loads(result)
+        print(f"Got OpenAPI spec version {spec.get('openapi', 'unknown')}")
+        # Work with structured spec
+    except json.JSONDecodeError:
+        # It's markdown
+        print(f"Got markdown docs: {len(result)} chars")
+        # Work with markdown content
+```
+
+### Common Use Cases
+
+```python
+# Raw spec files (returns JSON/YAML directly)
+fetch_api_spec("https://petstore.swagger.io/v2/swagger.json")
+fetch_api_spec("https://api.example.com/openapi.yaml")
+
+# HTML documentation pages (converts to markdown)
+fetch_api_spec("https://docs.example.com/rest-api")
+fetch_api_spec("https://developers.example.com/reference")
+
+# Swagger UI instances (JavaScript-rendered, auto-detects)
+fetch_api_spec("https://petstore.swagger.io/")
+```
+
+## Content-Type Detection Details
+
+The function checks if the `Content-Type` header contains any of these strings:
+- `application/json`
+- `yaml` (matches `application/yaml`, `text/yaml`, `application/x-yaml`)
+- `text/plain` (some servers serve YAML with this Content-Type)
+
+If the header check fails or raises an exception, the function gracefully falls back to `fetch_as_markdown()`.
+
+## Error Handling
+
+Inherits all error handling from [`fetch_as_markdown`](/api/fetch-as-markdown):
+
+- Returns error messages as strings prefixed with `"ERROR:"`
+- No exceptions raised during normal operation
+- Agent-friendly error messages suggest resolution steps
+
+```python
+result = fetch_api_spec("https://api.example.com/private-spec.json")
+
+if result.startswith("ERROR:"):
+    # Handle authentication required, network errors, etc.
+    print(result)
+else:
+    # Process spec or markdown
+    pass
+```
+
+## Performance
+
+- **Raw spec response**: ~1 second (single HTTP request)
+- **HTML docs (static)**: ~1 second (same as `fetch_as_markdown`)
+- **HTML docs (JS-rendered)**: ~5-8 seconds (Playwright fallback)
+
+## CLI Usage
+
+```bash
+# Return raw spec if available, markdown otherwise
+python scripts/fetch_as_markdown.py https://api.example.com/openapi.json --api-spec
+
+# Save to file
+python scripts/fetch_as_markdown.py https://api.example.com/spec --api-spec --output spec.json
+```
+
+## Related Functions
+
+- [`fetch_as_markdown`](/api/fetch-as-markdown) - General-purpose web page to markdown converter
+
+## Source Reference
+
+Implemented in `scripts/fetch_as_markdown.py:168-193`

@@ -1,0 +1,429 @@
+---
+title: OpenAI Agents SDK Integration
+description: Use web-to-markdown with OpenAI Agents SDK using the @function_tool decorator
+---
+
+The OpenAI Agents SDK integration uses the `@function_tool` decorator to create tools that can be used with OpenAI's agent framework.
+
+## Installation
+
+<Steps>
+  <Step title="Install dependencies">
+    ```bash
+    pip install agents requests readability-lxml html2text playwright
+    ```
+  </Step>
+  
+  <Step title="Install Chromium (one-time)">
+    Required only for JavaScript-heavy pages. This is a ~200MB download.
+    ```bash
+    playwright install chromium
+    ```
+    
+    If you skip this step, the tools will work fine for static pages. When they encounter a JS-rendered page without Playwright installed, the error message tells you exactly what to run.
+  </Step>
+  
+  <Step title="Set up OpenAI API key">
+    ```bash
+    export OPENAI_API_KEY="your-api-key-here"
+    ```
+  </Step>
+</Steps>
+
+## Basic Usage
+
+```python
+from agents import function_tool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+@function_tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+    return fetch_as_markdown(url)
+
+@function_tool
+def fetch_api_spec_tool(url: str) -> str:
+    """Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise."""
+    return fetch_api_spec(url)
+```
+
+## Using with OpenAI Agents
+
+### Basic Agent Example
+
+```python
+from agents import Agent, function_tool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# Define tools
+@function_tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+    return fetch_as_markdown(url)
+
+@function_tool
+def fetch_api_spec_tool(url: str) -> str:
+    """Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise."""
+    return fetch_api_spec(url)
+
+# Create agent with tools
+agent = Agent(
+    name="Documentation Assistant",
+    model="gpt-4",
+    instructions="You are a helpful assistant that reads and analyzes technical documentation from the web.",
+    tools=[fetch_page_as_markdown, fetch_api_spec_tool]
+)
+
+# Use the agent
+response = agent.run(
+    "Read https://docs.example.com/api and summarize the authentication methods"
+)
+print(response)
+```
+
+### Advanced Agent with Custom Instructions
+
+```python
+from agents import Agent, function_tool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# Define tools
+@function_tool
+def fetch_page_as_markdown(url: str) -> str:
+    """
+    Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically.
+    
+    Args:
+        url: Full URL including https://
+    
+    Returns:
+        Clean markdown content or error message starting with ERROR:
+    """
+    return fetch_as_markdown(url)
+
+@function_tool
+def fetch_api_spec_tool(url: str) -> str:
+    """
+    Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise.
+    
+    Args:
+        url: URL of API docs or spec file
+    
+    Returns:
+        Raw spec (JSON/YAML) or markdown content
+    """
+    return fetch_api_spec(url)
+
+# Create specialized agent
+agent = Agent(
+    name="API Documentation Analyzer",
+    model="gpt-4-turbo",
+    instructions="""
+    You are an expert API documentation analyst. When analyzing documentation:
+    
+    1. Use fetch_page_as_markdown for general documentation pages
+    2. Use fetch_api_spec_tool for OpenAPI/Swagger specs to get raw JSON
+    3. Check if tool results start with 'ERROR:' and handle appropriately
+    4. Focus on authentication, rate limits, and key endpoints
+    5. Provide clear, actionable summaries with code examples when relevant
+    """,
+    tools=[fetch_page_as_markdown, fetch_api_spec_tool]
+)
+
+# Use the agent
+response = agent.run(
+    "Analyze the API at https://api.example.com/docs and create a quick start guide"
+)
+print(response)
+```
+
+## Tool Descriptions
+
+### fetch_page_as_markdown
+
+Fetches a webpage and returns its content as clean markdown. Automatically handles JavaScript-rendered pages using a two-stage strategy:
+
+1. **Static fetch** (~1s) - Fast HTTP request for regular pages
+2. **Headless browser fallback** (~5-8s) - Automatically used if static fetch returns insufficient content
+
+**Parameters:**
+- `url` (str) - Full URL of the page to fetch (must include https://)
+
+**Returns:**
+- Clean markdown of the page content, or an error message prefixed with `"ERROR:"`
+
+### fetch_api_spec_tool
+
+Fetches API documentation or an OpenAPI/Swagger spec. Smart about content types:
+
+- If the server returns JSON/YAML (`Content-Type: application/json` or similar), returns the raw spec directly
+- Otherwise, returns clean markdown of the docs page
+
+**Parameters:**
+- `url` (str) - URL of the API docs page or raw spec file
+
+**Returns:**
+- Raw spec (JSON/YAML) or clean markdown of the docs page
+
+## Advanced Configuration
+
+### Tool with playwright_first Option
+
+For known JavaScript-heavy targets (SPAs, Swagger UI, React documentation sites), you can create a tool variant that always uses the headless browser:
+
+```python
+from agents import function_tool
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+@function_tool
+def fetch_js_page_as_markdown(url: str) -> str:
+    """
+    Fetch a JavaScript-heavy webpage using headless browser.
+    Use this for SPAs, Swagger UI, or React documentation sites.
+    Slower but more reliable for JS-rendered content.
+    """
+    return fetch_as_markdown(url, playwright_first=True)
+```
+
+**When to use `playwright_first=True`:**
+- Single-page applications (SPAs)
+- Swagger UI instances
+- React/Vue/Angular documentation sites
+- Any site you know requires JavaScript to render content
+
+### Multi-Tool Agent
+
+```python
+from agents import Agent, function_tool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# Define standard tool
+@function_tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+    return fetch_as_markdown(url)
+
+# Define browser-first tool for JS-heavy sites
+@function_tool
+def fetch_js_page_as_markdown(url: str) -> str:
+    """Fetch a JS-heavy webpage using headless browser. Use for SPAs and Swagger UI."""
+    return fetch_as_markdown(url, playwright_first=True)
+
+# Define API spec tool
+@function_tool
+def fetch_api_spec_tool(url: str) -> str:
+    """Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise."""
+    return fetch_api_spec(url)
+
+# Create agent with all tools
+agent = Agent(
+    name="Smart Documentation Fetcher",
+    model="gpt-4",
+    instructions="""
+    You have three tools for fetching web content:
+    
+    1. fetch_page_as_markdown - Use for standard documentation pages
+    2. fetch_js_page_as_markdown - Use for SPAs, Swagger UI, or React docs
+    3. fetch_api_spec_tool - Use to get raw OpenAPI/Swagger specs
+    
+    Choose the right tool based on the URL and content type.
+    """,
+    tools=[fetch_page_as_markdown, fetch_js_page_as_markdown, fetch_api_spec_tool]
+)
+```
+
+## Error Handling
+
+Errors are returned as strings prefixed with `"ERROR:"" rather than raised exceptions. This means your agents can handle them inline:
+
+```python
+from agents import Agent, function_tool
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+@function_tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+    return fetch_as_markdown(url)
+
+agent = Agent(
+    name="Robust Documentation Reader",
+    model="gpt-4",
+    instructions="""
+    When using fetch_page_as_markdown, always check if the result starts with 'ERROR:'.
+    If it does, explain the error to the user and suggest alternatives.
+    """,
+    tools=[fetch_page_as_markdown]
+)
+```
+
+Common error scenarios:
+- Invalid URL format
+- Network timeouts
+- Login walls or bot detection
+- Pages that remain empty even after JavaScript execution
+
+## Complete Production Example
+
+```python
+from agents import Agent, function_tool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+import os
+
+# Ensure API key is set
+if not os.getenv("OPENAI_API_KEY"):
+    raise ValueError("OPENAI_API_KEY environment variable must be set")
+
+# Define comprehensive tool set
+@function_tool
+def fetch_page_as_markdown(url: str) -> str:
+    """
+    Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically.
+    
+    This tool uses a two-stage approach:
+    1. Fast static fetch (~1s) for regular pages
+    2. Automatic headless browser fallback (~5-8s) for JS-rendered content
+    
+    Args:
+        url: Full URL including https://
+    
+    Returns:
+        Clean markdown content or error message starting with ERROR:
+    
+    Examples:
+        - Standard docs: https://docs.example.com/api
+        - Blog posts: https://blog.example.com/post
+        - Reference pages: https://reference.example.com/v2
+    """
+    return fetch_as_markdown(url)
+
+@function_tool
+def fetch_js_page_as_markdown(url: str) -> str:
+    """
+    Fetch a JavaScript-heavy webpage using headless browser.
+    
+    Use this tool when you know the page requires JavaScript to render:
+    - Single-page applications (SPAs)
+    - Swagger UI instances
+    - React/Vue/Angular documentation
+    
+    This is slower (~5-8s) but more reliable for JS-rendered content.
+    
+    Args:
+        url: Full URL including https://
+    
+    Returns:
+        Clean markdown content or error message starting with ERROR:
+    
+    Examples:
+        - Swagger UI: https://api.example.com/swagger
+        - React docs: https://app.example.com/documentation
+    """
+    return fetch_as_markdown(url, playwright_first=True)
+
+@function_tool
+def fetch_api_spec_tool(url: str) -> str:
+    """
+    Fetch API documentation or an OpenAPI/Swagger spec.
+    
+    This tool is smart about content types:
+    - Returns raw JSON/YAML if server provides it (Content-Type: application/json)
+    - Returns clean markdown for HTML documentation pages
+    
+    Args:
+        url: URL of API docs or spec file
+    
+    Returns:
+        Raw spec (JSON/YAML) or markdown content
+    
+    Examples:
+        - OpenAPI spec: https://api.example.com/openapi.json
+        - Swagger JSON: https://api.example.com/swagger.json
+        - API docs page: https://docs.example.com/api/reference
+    """
+    return fetch_api_spec(url)
+
+# Create production-ready agent
+agent = Agent(
+    name="API Documentation Expert",
+    model="gpt-4-turbo",
+    instructions="""
+    You are an expert API documentation analyst with access to three specialized tools:
+    
+    1. **fetch_page_as_markdown**: Use for standard documentation pages
+       - Fast two-stage fetch (static first, browser fallback)
+       - Best for regular docs, blogs, reference pages
+    
+    2. **fetch_js_page_as_markdown**: Use for JavaScript-heavy sites
+       - Always uses headless browser
+       - Best for SPAs, Swagger UI, React/Vue/Angular docs
+       - Slower but more reliable for JS-rendered content
+    
+    3. **fetch_api_spec_tool**: Use for API specifications
+       - Returns raw JSON/YAML when available
+       - Falls back to markdown for HTML pages
+       - Best for OpenAPI specs, Swagger JSON files
+    
+    When analyzing documentation:
+    - Always check if results start with 'ERROR:' and handle gracefully
+    - Choose the right tool based on the URL and expected content type
+    - Focus on authentication, rate limits, error handling, and key endpoints
+    - Provide code examples when relevant
+    - Structure your output with clear sections
+    
+    If a fetch fails:
+    - Explain the error clearly
+    - Suggest alternative approaches or URLs
+    - Never hallucinate documentation content
+    """,
+    tools=[fetch_page_as_markdown, fetch_js_page_as_markdown, fetch_api_spec_tool]
+)
+
+# Example usage
+if __name__ == "__main__":
+    # Example 1: Analyze standard API docs
+    response = agent.run(
+        "Read https://docs.example.com/api and create a quick start guide"
+    )
+    print("=== Quick Start Guide ===")
+    print(response)
+    
+    # Example 2: Analyze OpenAPI spec
+    response = agent.run(
+        "Fetch https://api.example.com/openapi.json and list all POST endpoints"
+    )
+    print("\n=== POST Endpoints ===")
+    print(response)
+    
+    # Example 3: Analyze Swagger UI
+    response = agent.run(
+        "Read the Swagger UI at https://api.example.com/swagger and summarize rate limits"
+    )
+    print("\n=== Rate Limits Summary ===")
+    print(response)
+```
+
+## Streaming Responses
+
+```python
+from agents import Agent, function_tool
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+@function_tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+    return fetch_as_markdown(url)
+
+agent = Agent(
+    name="Documentation Assistant",
+    model="gpt-4",
+    instructions="You analyze technical documentation and provide clear summaries.",
+    tools=[fetch_page_as_markdown]
+)
+
+# Stream the response
+for chunk in agent.run_stream(
+    "Read https://docs.example.com/api and summarize the authentication methods"
+):
+    print(chunk, end="", flush=True)
+print()  # New line at the end
+```

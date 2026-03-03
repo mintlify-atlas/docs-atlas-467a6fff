@@ -1,0 +1,125 @@
+---
+title: 'fetch_as_markdown'
+description: 'Fetch any URL and return clean markdown with automatic fallback to headless browser'
+---
+
+## Function Signature
+
+```python
+def fetch_as_markdown(url: str, playwright_first: bool = False) -> str
+```
+
+Fetch a URL and return clean markdown. Uses a two-stage strategy: fast static HTTP fetch first, then falls back to headless Chromium if the content appears JavaScript-rendered.
+
+## Parameters
+
+<ParamField path="url" type="str" required>
+  Full URL including scheme (e.g., `https://docs.example.com/api`)
+</ParamField>
+
+<ParamField path="playwright_first" type="bool" default="False">
+  Skip static fetch and go straight to headless browser. Use this for known JS-heavy targets like:
+  - Single-page applications (SPAs)
+  - Swagger UI instances
+  - Interactive documentation sites
+  - Pages that require client-side rendering
+</ParamField>
+
+## Return Value
+
+<ResponseField name="return" type="str">
+  Clean markdown string extracted from the page, or an error message prefixed with `"ERROR:"` if the fetch fails.
+  
+  Images are automatically stripped from the output to reduce noise for agent consumption.
+</ResponseField>
+
+## Behavior
+
+### Two-Stage Fetch Strategy
+
+1. **Static fetch** (~1 second)
+   - Performs fast HTTP request with browser-like headers
+   - Applies readability algorithm to strip navigation, ads, sidebars, and footers
+   - Converts HTML to markdown
+   - Returns immediately if content contains ≥200 characters after whitespace collapse
+
+2. **Playwright fallback** (~5-8 seconds)
+   - Triggered automatically if static fetch returns thin content (&lt;200 chars)
+   - Launches headless Chromium browser
+   - Waits for network idle and 3-second JS execution delay
+   - Applies same readability → markdown pipeline
+   - If content is still thin after readability extraction, tries raw HTML conversion as final fallback
+
+### Error Handling
+
+Errors are **returned as strings** (not raised as exceptions) to simplify agent integration:
+
+- **Playwright not installed**: Returns `"ERROR: Page appears JavaScript-rendered but Playwright is not installed. Run: pip install playwright && playwright install chromium"`
+- **Fetch failure**: Returns `"ERROR: Could not fetch {url}. The page may require authentication or block automated access."`
+- **Thin content**: Returns `"ERROR: Fetched {url} but content appears to be behind a login wall or requires user interaction that cannot be automated."`
+
+## Examples
+
+### Basic Usage
+
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+# Fetch standard documentation page
+markdown = fetch_as_markdown("https://docs.example.com/api")
+print(markdown)
+```
+
+### JavaScript-Heavy Site
+
+```python
+# Skip static fetch for known SPA (saves 1-2 seconds)
+markdown = fetch_as_markdown(
+    "https://app.example.com/swagger",
+    playwright_first=True
+)
+```
+
+### Error Handling
+
+```python
+result = fetch_as_markdown("https://example.com/private-docs")
+
+if result.startswith("ERROR:"):
+    print(f"Failed to fetch: {result}")
+else:
+    # Process markdown
+    print(f"Fetched {len(result)} characters of content")
+```
+
+### Common Use Cases
+
+```python
+# Regular documentation (fast path)
+fetch_as_markdown("https://docs.python.org/3/library/asyncio.html")
+
+# Swagger UI (use playwright_first)
+fetch_as_markdown(
+    "https://petstore.swagger.io/",
+    playwright_first=True
+)
+
+# React/Vue/Angular docs (auto-detects JS rendering)
+fetch_as_markdown("https://react.dev/reference/react")
+```
+
+## Performance Considerations
+
+- **Static fetch**: ~1 second for most pages
+- **Playwright fetch**: ~5-8 seconds (includes browser launch, JS execution, rendering)
+- **Playwright overhead**: ~200MB disk space for Chromium binary (one-time install)
+
+**Optimization tip**: Use `playwright_first=True` when you know the site requires JavaScript. This skips the initial static fetch attempt and saves 1-2 seconds.
+
+## Related Functions
+
+- [`fetch_api_spec`](/api/fetch-api-spec) - Specialized function for fetching API documentation that returns raw JSON/YAML specs when available
+
+## Source Reference
+
+Implemented in `scripts/fetch_as_markdown.py:119-165`

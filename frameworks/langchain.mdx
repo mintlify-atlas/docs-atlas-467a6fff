@@ -1,0 +1,278 @@
+---
+title: LangChain Integration
+description: Use web-to-markdown with LangChain using the @tool decorator pattern
+---
+
+The LangChain integration uses the `@tool` decorator to create tools that can be used with any LangChain agent or chain.
+
+## Installation
+
+<Steps>
+  <Step title="Install dependencies">
+    ```bash
+    pip install langchain requests readability-lxml html2text playwright
+    ```
+  </Step>
+  
+  <Step title="Install Chromium (one-time)">
+    Required only for JavaScript-heavy pages. This is a ~200MB download.
+    ```bash
+    playwright install chromium
+    ```
+    
+    If you skip this step, the tools will work fine for static pages. When they encounter a JS-rendered page without Playwright installed, the error message tells you exactly what to run.
+  </Step>
+</Steps>
+
+## Basic Usage
+
+```python
+from langchain.tools import tool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+@tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+    return fetch_as_markdown(url)
+
+@tool
+def fetch_api_spec_tool(url: str) -> str:
+    """Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise."""
+    return fetch_api_spec(url)
+```
+
+## Using with LangChain Agents
+
+### Basic Agent Example
+
+```python
+from langchain.tools import tool
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain_openai import ChatOpenAI
+from langchain import hub
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# Define tools
+@tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+    return fetch_as_markdown(url)
+
+@tool
+def fetch_api_spec_tool(url: str) -> str:
+    """Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise."""
+    return fetch_api_spec(url)
+
+# Create agent
+tools = [fetch_page_as_markdown, fetch_api_spec_tool]
+llm = ChatOpenAI(model="gpt-4", temperature=0)
+prompt = hub.pull("hwchase17/react")
+
+agent = create_react_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+# Use the agent
+result = agent_executor.invoke({
+    "input": "Read https://docs.example.com/api and summarize the authentication methods"
+})
+print(result["output"])
+```
+
+### OpenAI Functions Agent Example
+
+```python
+from langchain.tools import tool
+from langchain.agents import AgentExecutor, create_openai_functions_agent
+from langchain_openai import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# Define tools
+@tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+    return fetch_as_markdown(url)
+
+@tool
+def fetch_api_spec_tool(url: str) -> str:
+    """Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise."""
+    return fetch_api_spec(url)
+
+# Create prompt
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful assistant that can read and analyze web documentation."),
+    ("human", "{input}"),
+    MessagesPlaceholder("agent_scratchpad"),
+])
+
+# Create agent
+tools = [fetch_page_as_markdown, fetch_api_spec_tool]
+llm = ChatOpenAI(model="gpt-4", temperature=0)
+
+agent = create_openai_functions_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+# Use the agent
+result = agent_executor.invoke({
+    "input": "Fetch https://api.example.com/openapi.json and list all available endpoints"
+})
+print(result["output"])
+```
+
+## Tool Descriptions
+
+### fetch_page_as_markdown
+
+Fetches a webpage and returns its content as clean markdown. Automatically handles JavaScript-rendered pages using a two-stage strategy:
+
+1. **Static fetch** (~1s) - Fast HTTP request for regular pages
+2. **Headless browser fallback** (~5-8s) - Automatically used if static fetch returns insufficient content
+
+**Parameters:**
+- `url` (str) - Full URL of the page to fetch (must include https://)
+
+**Returns:**
+- Clean markdown of the page content, or an error message prefixed with `"ERROR:"`
+
+### fetch_api_spec_tool
+
+Fetches API documentation or an OpenAPI/Swagger spec. Smart about content types:
+
+- If the server returns JSON/YAML (`Content-Type: application/json` or similar), returns the raw spec directly
+- Otherwise, returns clean markdown of the docs page
+
+**Parameters:**
+- `url` (str) - URL of the API docs page or raw spec file
+
+**Returns:**
+- Raw spec (JSON/YAML) or clean markdown of the docs page
+
+## Advanced Configuration
+
+### Using playwright_first Option
+
+For known JavaScript-heavy targets (SPAs, Swagger UI, React documentation sites), you can create a tool variant that always uses the headless browser:
+
+```python
+from langchain.tools import tool
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+@tool
+def fetch_page_as_markdown_browser(url: str) -> str:
+    """Fetch a JS-heavy webpage using headless browser. Use for SPAs and Swagger UI."""
+    return fetch_as_markdown(url, playwright_first=True)
+```
+
+**When to use `playwright_first=True`:**
+- Single-page applications (SPAs)
+- Swagger UI instances
+- React/Vue/Angular documentation sites
+- Any site you know requires JavaScript to render content
+
+### Using with LangChain Chains
+
+You can also use these tools directly in chains without agents:
+
+```python
+from langchain.tools import tool
+from langchain_openai import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema.runnable import RunnablePassthrough
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+@tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+    return fetch_as_markdown(url)
+
+# Create a chain that fetches and summarizes
+prompt = ChatPromptTemplate.from_template(
+    "Summarize the following documentation:\n\n{content}"
+)
+llm = ChatOpenAI(model="gpt-4", temperature=0)
+
+chain = (
+    {"content": lambda x: fetch_page_as_markdown.invoke(x["url"])}
+    | prompt
+    | llm
+)
+
+result = chain.invoke({"url": "https://docs.example.com/api"})
+print(result.content)
+```
+
+## Error Handling
+
+Errors are returned as strings prefixed with `"ERROR:"` rather than raised exceptions. This means your agent or chain can handle them inline:
+
+```python
+result = fetch_page_as_markdown.invoke("https://invalid-url")
+if result.startswith("ERROR:"):
+    print(f"Failed to fetch page: {result}")
+else:
+    print(f"Successfully fetched {len(result)} characters")
+```
+
+Common error scenarios:
+- Invalid URL format
+- Network timeouts
+- Login walls or bot detection
+- Pages that remain empty even after JavaScript execution
+
+## Complete Example with Error Handling
+
+```python
+from langchain.tools import tool
+from langchain.agents import AgentExecutor, create_openai_functions_agent
+from langchain_openai import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# Define tools with improved descriptions
+@tool
+def fetch_page_as_markdown(url: str) -> str:
+    """
+    Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically.
+    
+    Args:
+        url: Full URL including https://
+    
+    Returns:
+        Clean markdown content or error message starting with ERROR:
+    """
+    return fetch_as_markdown(url)
+
+@tool
+def fetch_api_spec_tool(url: str) -> str:
+    """
+    Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise.
+    
+    Args:
+        url: URL of API docs or spec file
+    
+    Returns:
+        Raw spec (JSON/YAML) or markdown content
+    """
+    return fetch_api_spec(url)
+
+# Create agent with error handling instructions
+prompt = ChatPromptTemplate.from_messages([
+    ("system", 
+     "You are a helpful assistant that can read and analyze web documentation. "
+     "When fetching pages, check if the result starts with 'ERROR:' and handle appropriately."),
+    ("human", "{input}"),
+    MessagesPlaceholder("agent_scratchpad"),
+])
+
+tools = [fetch_page_as_markdown, fetch_api_spec_tool]
+llm = ChatOpenAI(model="gpt-4", temperature=0)
+
+agent = create_openai_functions_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+# The agent will automatically handle errors returned by the tools
+result = agent_executor.invoke({
+    "input": "Read https://docs.example.com/api and summarize the authentication methods"
+})
+print(result["output"])
+```

@@ -1,0 +1,535 @@
+---
+title: Framework Adapters
+description: Framework-agnostic design and examples for wrapping fetch_as_markdown in any agent framework
+---
+
+The core fetch logic in `scripts/fetch_as_markdown.py` has **zero framework dependencies**. This means you can use it standalone or wrap it in any agent framework with minimal code.
+
+## Design Philosophy
+
+The framework-agnostic approach follows a simple principle:
+
+<Card title="Core Principle" icon="cube">
+  **Keep the hard parts framework-free, make the wrapper trivial.**
+  
+  All the complexity (two-stage fetch, readability stripping, JS rendering, error handling) lives in pure Python functions. Framework adapters are just thin wrappers that translate between your framework's tool format and the core functions.
+</Card>
+
+This design provides:
+- **No vendor lock-in** - Switch frameworks without rewriting fetch logic
+- **Easy testing** - Test core logic without framework overhead
+- **Simple maintenance** - Framework updates don't break your fetch code
+- **Minimal code** - Most adapters are 5-10 lines
+
+## Adapter Pattern
+
+Every framework adapter follows the same pattern:
+
+```python
+# 1. Import the core functions
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# 2. Wrap in your framework's tool decorator/class
+@your_framework.tool
+def fetch_page_as_markdown(url: str) -> str:
+    """Docstring becomes tool description in most frameworks."""
+    return fetch_as_markdown(url)
+
+# 3. Register with your agent
+agent = YourFramework(tools=[fetch_page_as_markdown])
+```
+
+<Note>
+The docstring is important! Most frameworks use it as the tool description that helps the agent decide when to invoke the tool.
+</Note>
+
+## Framework Examples
+
+<Tabs>
+  <Tab title="LangChain">
+    ### Installation
+    
+    ```bash
+    pip install langchain
+    ```
+    
+    ### Implementation
+    
+    ```python
+    from langchain.tools import tool
+    from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+    @tool
+    def fetch_page_as_markdown(url: str) -> str:
+        """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+        return fetch_as_markdown(url)
+
+    @tool
+    def fetch_api_spec_tool(url: str) -> str:
+        """Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise."""
+        return fetch_api_spec(url)
+    ```
+    
+    ### Usage
+    
+    ```python
+    from langchain.agents import initialize_agent, AgentType
+    from langchain.llms import OpenAI
+
+    llm = OpenAI(temperature=0)
+    tools = [fetch_page_as_markdown, fetch_api_spec_tool]
+    
+    agent = initialize_agent(
+        tools=tools,
+        llm=llm,
+        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=True
+    )
+    
+    result = agent.run("Fetch the Python asyncio documentation and summarize it")
+    ```
+  </Tab>
+  
+  <Tab title="CrewAI">
+    ### Installation
+    
+    ```bash
+    pip install crewai
+    ```
+    
+    ### Implementation
+    
+    ```python
+    from crewai.tools import BaseTool
+    from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+    class FetchPageAsMarkdownTool(BaseTool):
+        name: str = "Fetch Page as Markdown"
+        description: str = (
+            "Fetch a webpage and return clean markdown. "
+            "Handles JavaScript-rendered pages automatically via headless browser fallback."
+        )
+
+        def _run(self, url: str) -> str:
+            return fetch_as_markdown(url)
+
+    class FetchApiSpecTool(BaseTool):
+        name: str = "Fetch API Spec"
+        description: str = (
+            "Fetch API documentation or an OpenAPI/Swagger spec. "
+            "Returns raw JSON/YAML if available, clean markdown otherwise."
+        )
+
+        def _run(self, url: str) -> str:
+            return fetch_api_spec(url)
+    ```
+    
+    ### Usage
+    
+    ```python
+    from crewai import Agent, Task, Crew
+
+    researcher = Agent(
+        role="Documentation Researcher",
+        goal="Fetch and analyze technical documentation",
+        tools=[FetchPageAsMarkdownTool(), FetchApiSpecTool()],
+        verbose=True
+    )
+    
+    task = Task(
+        description="Fetch the React hooks documentation and extract key concepts",
+        agent=researcher
+    )
+    
+    crew = Crew(agents=[researcher], tasks=[task])
+    result = crew.kickoff()
+    ```
+  </Tab>
+  
+  <Tab title="OpenAI Agents SDK">
+    ### Installation
+    
+    ```bash
+    pip install openai-agents
+    ```
+    
+    ### Implementation
+    
+    ```python
+    from agents import function_tool
+    from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+    @function_tool
+    def fetch_page_as_markdown(url: str) -> str:
+        """Fetch a webpage and return clean markdown. Handles JS-rendered pages automatically."""
+        return fetch_as_markdown(url)
+
+    @function_tool
+    def fetch_api_spec_tool(url: str) -> str:
+        """Fetch API docs or OpenAPI spec. Returns raw JSON/YAML if available, markdown otherwise."""
+        return fetch_api_spec(url)
+    ```
+    
+    ### Usage
+    
+    ```python
+    from agents import Agent
+
+    agent = Agent(
+        name="doc_researcher",
+        instructions="You fetch and analyze technical documentation.",
+        tools=[fetch_page_as_markdown, fetch_api_spec_tool]
+    )
+    
+    response = agent.run("Get the Stripe API authentication documentation")
+    ```
+  </Tab>
+  
+  <Tab title="Agno">
+    ### Installation
+    
+    ```bash
+    pip install agno
+    ```
+    
+    ### Implementation
+    
+    The Agno adapter is included in the repository at `scripts/agno_toolkit.py`:
+    
+    ```python
+    from scripts.agno_toolkit import WebToMarkdownTools
+    from agno import Agent
+
+    # Basic usage
+    agent = Agent(tools=[WebToMarkdownTools()])
+
+    # For JS-heavy targets, enable playwright_first mode
+    agent = Agent(tools=[WebToMarkdownTools(playwright_first=True)])
+    ```
+    
+    This registers two tools:
+    - `fetch_page_as_markdown` - General webpage fetching
+    - `fetch_api_spec_tool` - API documentation fetching
+  </Tab>
+  
+  <Tab title="Standalone">
+    ### No Framework Needed
+    
+    You can use the functions directly without any framework:
+    
+    ```python
+    from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+    # Simple script
+    url = "https://docs.python.org/3/library/asyncio.html"
+    markdown = fetch_as_markdown(url)
+    
+    if markdown.startswith("ERROR:"):
+        print(f"Failed: {markdown}")
+    else:
+        with open("output.md", "w") as f:
+            f.write(markdown)
+        print("Saved to output.md")
+    ```
+    
+    ### Custom Integration
+    
+    Build your own abstraction:
+    
+    ```python
+    from scripts.fetch_as_markdown import fetch_as_markdown
+    from typing import Protocol
+
+    class DocumentFetcher(Protocol):
+        def fetch(self, url: str) -> str: ...
+
+    class WebFetcher:
+        def __init__(self, use_browser_first: bool = False):
+            self.use_browser_first = use_browser_first
+        
+        def fetch(self, url: str) -> str:
+            return fetch_as_markdown(url, playwright_first=self.use_browser_first)
+
+    # Use in your system
+    fetcher = WebFetcher(use_browser_first=True)
+    content = fetcher.fetch("https://react.dev")
+    ```
+  </Tab>
+</Tabs>
+
+## Creating Your Own Adapter
+
+If your framework isn't listed above, follow these steps:
+
+### 1. Identify Your Framework's Tool Format
+
+Find how your framework defines tools. Common patterns:
+
+<CodeGroup>
+```python Decorator-based
+@framework.tool
+def my_tool(param: str) -> str:
+    """Description"""
+    return result
+```
+
+```python Class-based
+class MyTool(FrameworkBaseTool):
+    name = "Tool Name"
+    description = "Tool description"
+    
+    def run(self, param: str) -> str:
+        return result
+```
+
+```python Function registration
+def my_tool(param: str) -> str:
+    """Description"""
+    return result
+
+framework.register_tool(my_tool)
+```
+</CodeGroup>
+
+### 2. Wrap the Core Functions
+
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+from your_framework import tool_decorator  # or base class, etc.
+
+@tool_decorator  # Use your framework's decorator
+def fetch_page_as_markdown(url: str) -> str:
+    """
+    Fetch a webpage and return clean markdown.
+    Handles JavaScript-rendered pages automatically.
+    """
+    return fetch_as_markdown(url)
+
+@tool_decorator
+def fetch_api_spec_tool(url: str) -> str:
+    """
+    Fetch API documentation or OpenAPI spec.
+    Returns raw JSON/YAML if available, markdown otherwise.
+    """
+    return fetch_api_spec(url)
+```
+
+### 3. Handle Framework-Specific Requirements
+
+Some frameworks need additional configuration:
+
+<Tabs>
+  <Tab title="Type Annotations">
+    If your framework requires specific type hints:
+    
+    ```python
+    from your_framework import ToolInput, ToolOutput
+    
+    @tool
+    def fetch_page_as_markdown(url: ToolInput[str]) -> ToolOutput[str]:
+        return fetch_as_markdown(url)
+    ```
+  </Tab>
+  
+  <Tab title="Schema Definitions">
+    If your framework uses Pydantic or JSON schemas:
+    
+    ```python
+    from pydantic import BaseModel, Field
+    
+    class FetchInput(BaseModel):
+        url: str = Field(description="URL to fetch")
+    
+    class FetchOutput(BaseModel):
+        content: str = Field(description="Markdown content")
+    
+    @tool(input_schema=FetchInput, output_schema=FetchOutput)
+    def fetch_page_as_markdown(input: FetchInput) -> FetchOutput:
+        content = fetch_as_markdown(input.url)
+        return FetchOutput(content=content)
+    ```
+  </Tab>
+  
+  <Tab title="Error Handling">
+    If your framework expects exceptions instead of error strings:
+    
+    ```python
+    from your_framework import ToolError
+    
+    @tool
+    def fetch_page_as_markdown(url: str) -> str:
+        result = fetch_as_markdown(url)
+        
+        if result.startswith("ERROR:"):
+            raise ToolError(result)
+        
+        return result
+    ```
+  </Tab>
+  
+  <Tab title="Async Support">
+    If your framework requires async tools:
+    
+    ```python
+    import asyncio
+    from functools import partial
+    
+    @async_tool
+    async def fetch_page_as_markdown(url: str) -> str:
+        # Run sync function in thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            partial(fetch_as_markdown, url)
+        )
+        return result
+    ```
+  </Tab>
+</Tabs>
+
+### 4. Test Your Adapter
+
+```python
+# test_adapter.py
+from your_adapter import fetch_page_as_markdown, fetch_api_spec_tool
+
+def test_fetch_page():
+    result = fetch_page_as_markdown("https://example.com")
+    assert not result.startswith("ERROR:")
+    assert len(result) > 100
+
+def test_fetch_api_spec():
+    result = fetch_api_spec_tool("https://api.github.com")
+    assert not result.startswith("ERROR:")
+```
+
+## Advanced Patterns
+
+### Configuration Options
+
+Pass configuration through your adapter:
+
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+class ConfigurableFetchTool(BaseTool):
+    def __init__(self, playwright_first: bool = False):
+        self.playwright_first = playwright_first
+        super().__init__()
+    
+    def _run(self, url: str) -> str:
+        return fetch_as_markdown(url, playwright_first=self.playwright_first)
+
+# Usage
+tool_for_spas = ConfigurableFetchTool(playwright_first=True)
+tool_for_static = ConfigurableFetchTool(playwright_first=False)
+```
+
+### Caching Results
+
+Add caching to reduce redundant fetches:
+
+```python
+from functools import lru_cache
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+@lru_cache(maxsize=100)
+def cached_fetch(url: str, playwright_first: bool = False) -> str:
+    return fetch_as_markdown(url, playwright_first=playwright_first)
+
+@tool
+def fetch_page_as_markdown(url: str) -> str:
+    return cached_fetch(url)
+```
+
+### Rate Limiting
+
+Protect against excessive requests:
+
+```python
+import time
+from threading import Lock
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+class RateLimitedFetchTool:
+    def __init__(self, min_interval: float = 1.0):
+        self.min_interval = min_interval
+        self.last_fetch = 0
+        self.lock = Lock()
+    
+    def fetch(self, url: str) -> str:
+        with self.lock:
+            elapsed = time.time() - self.last_fetch
+            if elapsed < self.min_interval:
+                time.sleep(self.min_interval - elapsed)
+            
+            result = fetch_as_markdown(url)
+            self.last_fetch = time.time()
+            return result
+```
+
+### Logging and Telemetry
+
+Add observability to your adapter:
+
+```python
+import logging
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+logger = logging.getLogger(__name__)
+
+@tool
+def fetch_page_as_markdown(url: str) -> str:
+    logger.info(f"Fetching {url}")
+    
+    start = time.time()
+    result = fetch_as_markdown(url)
+    duration = time.time() - start
+    
+    if result.startswith("ERROR:"):
+        logger.error(f"Failed to fetch {url}: {result}")
+    else:
+        logger.info(f"Fetched {url} in {duration:.2f}s ({len(result)} chars)")
+    
+    return result
+```
+
+## Why Framework-Agnostic?
+
+The agent framework landscape is fragmented and fast-moving. By keeping the core logic framework-free:
+
+<Steps>
+  <Step title="Future-proof">
+    When new frameworks emerge, adaptation is trivial. No need to rewrite fetch logic.
+  </Step>
+  
+  <Step title="Multi-framework projects">
+    Use the same fetch code across different agents in different frameworks.
+  </Step>
+  
+  <Step title="Easy testing">
+    Test core logic without framework dependencies. No mocking framework internals.
+  </Step>
+  
+  <Step title="Portable knowledge">
+    Understanding one adapter helps you create adapters for any framework.
+  </Step>
+</Steps>
+
+## Contributing Adapters
+
+If you create an adapter for a new framework, consider contributing it:
+
+1. Add your adapter example to `references/framework-adapters.md`
+2. Follow the existing pattern (5-10 lines of wrapper code)
+3. Include a usage example
+4. Test it with the actual framework
+5. Submit a pull request
+
+See [CONTRIBUTING.md](https://github.com/goetzcj/web-to-markdown/blob/main/CONTRIBUTING.md) for details.
+
+## See Also
+
+- [Python API](/usage/python-api) - Core function reference
+- [CLI Usage](/usage/cli) - Command-line interface
+- [How It Works](/how-it-works) - How the fetch strategy works

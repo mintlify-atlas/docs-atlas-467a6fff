@@ -1,0 +1,335 @@
+---
+title: Fetch Strategies
+description: Choosing between static and playwright_first modes for optimal performance
+---
+
+## Overview
+
+web-to-markdown offers two fetch strategies that balance speed and compatibility. Understanding when to use each will help you optimize for performance while ensuring reliable content extraction.
+
+## Default Strategy: Static First
+
+The default behavior tries a fast HTTP request first, then falls back to a headless browser if needed.
+
+```python
+markdown = fetch_as_markdown("https://docs.example.com")
+# playwright_first=False (default)
+```
+
+### How It Works
+
+```
+┌─────────────────────────────────────────┐
+│ 1. Static HTTP Request (~1s)           │
+│    - requests.get() with browser headers│
+│    - 15-second timeout                  │
+└────────────────┬────────────────────────┘
+                 │
+                 ▼
+         ┌───────────────┐
+         │ Process HTML  │
+         │ - readability │
+         │ - html2text   │
+         └───────┬───────┘
+                 │
+                 ▼
+         ┌──────────────┐
+         │ Check length │
+         └───────┬──────┘
+                 │
+        ┌────────┴────────┐
+        │                 │
+    ≥200 chars        <200 chars
+        │                 │
+        ▼                 ▼
+    ✓ Return     ┌─────────────────────┐
+                 │ 2. Playwright (~5-8s)│
+                 │    - Launch Chromium │
+                 │    - Wait for network│
+                 │    - Wait 3s for JS  │
+                 └──────────┬───────────┘
+                            │
+                            ▼
+                    Process & return
+```
+
+### Performance Characteristics
+
+| Stage | Time | Success Rate | Best For |
+|-------|------|--------------|----------|
+| Static only | **~1 second** | ~70% of pages | Traditional sites, server-rendered content, static documentation |
+| Static + Playwright fallback | **~6-9 seconds** | ~95% of pages | JS-rendered SPAs, dynamic content, API explorers |
+
+### When Static Fetch Succeeds
+
+```python
+# These pages typically work with static fetch alone:
+fetch_as_markdown("https://github.com/user/repo")              # GitHub pages
+fetch_as_markdown("https://python.readthedocs.io/en/latest/")  # Read the Docs
+fetch_as_markdown("https://dev.to/article-slug")               # Blog posts
+fetch_as_markdown("https://wikipedia.org/wiki/Topic")          # Wikipedia
+```
+
+**Characteristics of static-friendly pages:**
+- Server-side rendered HTML
+- Content present in initial HTML response
+- No JavaScript required for core content
+- Traditional CMS or static site generators
+
+### When Playwright Fallback Triggers
+
+```python
+# These pages trigger automatic Playwright fallback:
+fetch_as_markdown("https://app.example.com/docs")  # React/Vue/Angular SPA
+fetch_as_markdown("https://api.example.com/swagger")  # Swagger UI
+fetch_as_markdown("https://modern-docs.example.com")  # Docusaurus, Vitepress, etc.
+```
+
+**Characteristics that trigger fallback:**
+- Initial HTML contains `<div id="root"></div>` or similar shell
+- Content rendered entirely by JavaScript
+- Less than 200 characters in static response
+- Single-page application architecture
+
+<Note>
+The fallback is **automatic and transparent**. You don't need to detect or handle it manually.
+</Note>
+
+## Playwright First Strategy
+
+Skip the static fetch entirely and go straight to a headless browser.
+
+```python
+markdown = fetch_as_markdown(
+    "https://app.example.com/swagger",
+    playwright_first=True
+)
+```
+
+### How It Works
+
+```
+┌──────────────────────────────────────┐
+│ Playwright Fetch (~5-8s)             │
+│ 1. Launch headless Chromium          │
+│ 2. Navigate to URL                   │
+│ 3. Wait for networkidle              │
+│ 4. Wait additional 3s for JS         │
+│ 5. Extract page.content()            │
+└────────────────┬─────────────────────┘
+                 │
+                 ▼
+         ┌───────────────┐
+         │ Process HTML  │
+         │ - readability │
+         │ - html2text   │
+         └───────┬───────┘
+                 │
+                 ▼
+            ✓ Return
+```
+
+### When to Use Playwright First
+
+Use `playwright_first=True` when you **know in advance** the page requires JavaScript:
+
+#### Swagger UI / OpenAPI Explorers
+```python
+# Swagger UI is always JS-rendered
+markdown = fetch_as_markdown(
+    "https://petstore.swagger.io",
+    playwright_first=True
+)
+```
+
+#### Single-Page Applications
+```python
+# React/Vue/Angular apps with no SSR
+markdown = fetch_as_markdown(
+    "https://app.example.com/dashboard",
+    playwright_first=True
+)
+```
+
+#### Known JS-Heavy Documentation
+```python
+# Modern doc frameworks that require JS
+markdown = fetch_as_markdown(
+    "https://docs.example.com",  # Docusaurus, Vitepress, etc.
+    playwright_first=True
+)
+```
+
+#### Repeated Fetches from Same Domain
+```python
+# If you know a domain always needs JS, save 1-2s per fetch
+for path in ["/api/auth", "/api/users", "/api/posts"]:
+    markdown = fetch_as_markdown(
+        f"https://api.example.com/docs{path}",
+        playwright_first=True
+    )
+```
+
+### Performance Impact
+
+**Time savings by skipping static fetch:**
+- Static attempt: ~1 second
+- HTTP overhead: ~0.5 seconds
+- **Total saved**: ~1-2 seconds per fetch
+
+**When it matters:**
+- Fetching multiple pages from the same JS-heavy domain
+- Batch processing of API documentation
+- Real-time agent responses where every second counts
+
+<Tip>
+If you're fetching 10 pages from a React-based docs site, `playwright_first=True` saves ~10-20 seconds total.
+</Tip>
+
+## Performance Comparison
+
+### Single Page Fetch
+
+```python
+import time
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+# Static-friendly page
+start = time.time()
+result = fetch_as_markdown("https://github.com/user/repo")
+print(f"Time: {time.time() - start:.1f}s")  # ~1.2s
+
+# JS-rendered page (default strategy)
+start = time.time()
+result = fetch_as_markdown("https://app.example.com/swagger")
+print(f"Time: {time.time() - start:.1f}s")  # ~7.5s (1s static + 6.5s Playwright)
+
+# JS-rendered page (playwright_first)
+start = time.time()
+result = fetch_as_markdown("https://app.example.com/swagger", playwright_first=True)
+print(f"Time: {time.time() - start:.1f}s")  # ~5.8s (skip static attempt)
+```
+
+### Batch Operations
+
+| Scenario | Default Strategy | playwright_first=True | Time Saved |
+|----------|------------------|----------------------|------------|
+| 10 static pages | ~12s | N/A | N/A |
+| 10 JS pages (unknown) | ~75s | ~58s | **~17s (23%)** |
+| 10 JS pages (known) | ~75s | ~58s | **~17s (23%)** |
+| Mixed (5 static, 5 JS) | ~43s | ~58s | -15s *(worse)* |
+
+<Warning>
+Only use `playwright_first=True` if you're confident the page needs JavaScript. Using it on static pages wastes 5-7 seconds per fetch.
+</Warning>
+
+## Decision Tree
+
+```
+Do you know the page requires JavaScript?
+│
+├─ Yes → Use playwright_first=True
+│         - Swagger UI
+│         - Known SPAs
+│         - API explorers
+│         - Batch fetches from JS-heavy domain
+│
+└─ No → Use default (static first)
+          - Unknown pages
+          - Mixed content types
+          - First-time fetches
+          - Documentation with unknown tech stack
+```
+
+## CLI Usage
+
+### Default Strategy
+```bash
+# Try static first, fall back to Playwright if needed
+python scripts/fetch_as_markdown.py https://docs.example.com
+```
+
+### Playwright First
+```bash
+# Skip static fetch
+python scripts/fetch_as_markdown.py https://app.example.com/swagger --playwright-first
+```
+
+## Error Handling
+
+Both strategies handle errors the same way — returning error strings instead of raising exceptions:
+
+```python
+# Playwright not installed
+result = fetch_as_markdown("https://spa.example.com")
+# Returns: "ERROR: Page appears JavaScript-rendered but Playwright is not installed..."
+
+# Login wall or bot block
+result = fetch_as_markdown("https://private.example.com", playwright_first=True)
+# Returns: "ERROR: Fetched ... but content appears to be behind a login wall..."
+```
+
+See [Error Handling](/error-handling) for details on all error scenarios.
+
+## Framework Integration
+
+### Agno
+```python
+from scripts.agno_toolkit import WebToMarkdownTools
+
+# Default: static first
+agent = Agent(tools=[WebToMarkdownTools()])
+
+# Playwright first for all fetches
+agent = Agent(tools=[WebToMarkdownTools(playwright_first=True)])
+```
+
+### LangChain
+```python
+from langchain.tools import tool
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+@tool
+def fetch_page(url: str, use_browser: bool = False) -> str:
+    """Fetch webpage. Set use_browser=True for JS-heavy pages."""
+    return fetch_as_markdown(url, playwright_first=use_browser)
+```
+
+### CrewAI
+```python
+from crewai.tools import BaseTool
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+class FetchPageTool(BaseTool):
+    playwright_first: bool = False
+    
+    def _run(self, url: str) -> str:
+        return fetch_as_markdown(url, playwright_first=self.playwright_first)
+
+# Use in agent
+researcher = Agent(
+    tools=[FetchPageTool(playwright_first=True)]  # JS-heavy targets
+)
+```
+
+## Best Practices
+
+1. **Start with defaults**: Let the automatic fallback handle unknown pages
+2. **Profile once, optimize many**: If you're fetching multiple pages from the same domain, test one page to determine if `playwright_first` helps
+3. **Document your choice**: When using `playwright_first=True`, add a comment explaining why
+4. **Monitor performance**: Log fetch times to identify opportunities for optimization
+
+```python
+import logging
+import time
+
+def fetch_with_logging(url: str, **kwargs) -> str:
+    start = time.time()
+    result = fetch_as_markdown(url, **kwargs)
+    elapsed = time.time() - start
+    
+    strategy = "playwright_first" if kwargs.get("playwright_first") else "static_first"
+    logging.info(f"Fetched {url} using {strategy} in {elapsed:.2f}s")
+    
+    return result
+```

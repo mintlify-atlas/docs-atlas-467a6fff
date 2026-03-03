@@ -1,80 +1,173 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Get up and running with web-to-markdown in 2 minutes using real working examples
 ---
 
-## Get started in three steps
+# Quick Start
 
-Get your documentation site running locally and make your first customization.
+Learn how to fetch webpages and convert them to clean markdown with three common use cases.
 
-### Step 1: Set up your local environment
+## Basic Usage
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+Import the core functions from the script:
 
-### Step 2: Deploy your changes
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+## Example 1: Fetch a Static Page
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+For traditional server-rendered pages, the static fetch (~1s) will handle it automatically:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown
 
-### Step 3: Go live
+# Fetch any page — static first, headless browser fallback if needed
+markdown = fetch_as_markdown("https://docs.example.com/api")
+print(markdown)
+```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+The two-stage strategy means you don't have to know whether a page is static or JavaScript-rendered — it will try the fast path first and automatically fall back if needed.
 
-## Next steps
+## Example 2: Fetch a JavaScript-Heavy Page
 
-Now that you have your docs running, explore these key features:
+For known SPAs, React documentation, or Swagger UI instances, skip straight to the browser:
 
-<CardGroup cols={2}>
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+# Known JS-heavy target (SPA, Swagger UI, React docs) — skip straight to browser
+markdown = fetch_as_markdown(
+    "https://app.example.com/swagger",
+    playwright_first=True
+)
+print(markdown)
+```
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  Setting `playwright_first=True` skips the static HTTP request entirely and goes directly to the headless Chromium browser. Use this when you know the target is JavaScript-rendered to save a failed static request.
 </Note>
+
+## Example 3: Fetch an API Specification
+
+For OpenAPI/Swagger specs, use `fetch_api_spec` which checks the Content-Type header first:
+
+```python
+from scripts.fetch_as_markdown import fetch_api_spec
+
+# API docs — returns raw JSON/YAML if the server provides it, markdown otherwise
+spec = fetch_api_spec("https://api.example.com/openapi.json")
+print(spec)
+```
+
+If the server returns `application/json` or `application/yaml` in the Content-Type header, you'll get the raw spec directly. This is useful because many agents can parse OpenAPI specs natively without needing a markdown representation.
+
+If the URL points to an HTML documentation page instead of a raw spec file, it falls back to `fetch_as_markdown` automatically.
+
+## Error Handling
+
+Errors are returned as strings prefixed with `"ERROR:"` rather than raised as exceptions:
+
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+result = fetch_as_markdown("https://login-required.example.com")
+
+if result.startswith("ERROR:"):
+    print(f"Failed to fetch: {result}")
+else:
+    print(f"Success! Got {len(result)} characters of markdown")
+```
+
+This design means agents can handle errors inline without try/catch blocks.
+
+## Common Error Messages
+
+<CodeGroup>
+
+```text Playwright Not Installed
+ERROR: Page appears JavaScript-rendered but Playwright is not installed.
+Run: pip install playwright && playwright install chromium
+```
+
+```text Login Wall or Bot Block
+ERROR: Could not fetch https://example.com. The page may require
+authentication or block automated access.
+```
+
+```text Thin Content After Playwright
+ERROR: Fetched https://example.com but content appears to be behind
+a login wall or requires user interaction that cannot be automated.
+```
+
+</CodeGroup>
+
+## Using the CLI
+
+You can also use the script from the command line without writing any Python code:
+
+<CodeGroup>
+
+```bash Basic Fetch
+python scripts/fetch_as_markdown.py https://docs.example.com/getting-started
+```
+
+```bash Playwright First
+python scripts/fetch_as_markdown.py https://app.example.com/swagger --playwright-first
+```
+
+```bash API Spec
+python scripts/fetch_as_markdown.py https://api.example.com/openapi.json --api-spec
+```
+
+```bash Save to File
+python scripts/fetch_as_markdown.py https://docs.example.com --output docs.md
+```
+
+</CodeGroup>
+
+## How the Two-Stage Fetch Works
+
+Under the hood, `fetch_as_markdown()` implements this flow:
+
+<Steps>
+  <Step title="Static Fetch (Fast Path)">
+    Sends a standard HTTP request with browser-like headers (~1 second)
+    
+    - Runs the HTML through readability to strip navigation, ads, sidebars
+    - Converts to markdown with html2text
+    - If the result has ≥200 characters of real text, returns it immediately
+  </Step>
+
+  <Step title="Content Validation">
+    Checks if the markdown is "thin" (less than 200 characters after whitespace normalization)
+    
+    This threshold catches JavaScript-gated shells that return empty `<div id="app"></div>` elements without falsely flagging legitimately short pages.
+  </Step>
+
+  <Step title="Playwright Fallback (Slow Path)">
+    If static fetch returned thin content, automatically launches headless Chromium (~5-8 seconds)
+    
+    - Waits for `networkidle` event plus 3 seconds for JavaScript frameworks to finish rendering
+    - Runs the fully-rendered HTML through the same readability → html2text pipeline
+    - Returns the result if it has enough content
+  </Step>
+
+  <Step title="Error Detection">
+    If even Playwright returns thin content, returns an error string explaining the page is likely behind a login wall or blocking automated access
+  </Step>
+</Steps>
+
+You never have to think about this flow — just call `fetch_as_markdown()` and it handles everything automatically.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Framework Integration" icon="puzzle-piece" href="/framework-integration">
+    Learn how to integrate with Agno, LangChain, CrewAI, and other agent frameworks
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api-reference">
+    Detailed documentation of all functions and parameters
+  </Card>
+</CardGroup>

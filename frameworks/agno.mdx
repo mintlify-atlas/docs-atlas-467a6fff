@@ -1,0 +1,236 @@
+---
+title: Agno Integration
+description: Use web-to-markdown as a native Agno toolkit with automatic JS-rendering detection
+---
+
+The Agno integration provides a native `Toolkit` class that registers two tools for your agents: one for fetching general webpages and one for API documentation.
+
+## Installation
+
+<Steps>
+  <Step title="Install dependencies">
+    ```bash
+    pip install requests readability-lxml html2text playwright
+    ```
+  </Step>
+  
+  <Step title="Install Chromium (one-time)">
+    Required only for JavaScript-heavy pages. This is a ~200MB download.
+    ```bash
+    playwright install chromium
+    ```
+    
+    If you skip this step, the toolkit will work fine for static pages. When it encounters a JS-rendered page without Playwright installed, the error message tells you exactly what to run.
+  </Step>
+  
+  <Step title="Import the toolkit">
+    ```python
+    from scripts.agno_toolkit import WebToMarkdownTools
+    ```
+  </Step>
+</Steps>
+
+## Basic Usage
+
+```python
+from agno import Agent
+from scripts.agno_toolkit import WebToMarkdownTools
+
+agent = Agent(tools=[WebToMarkdownTools()])
+```
+
+This registers two tools with your agent:
+- `fetch_page_as_markdown` - Fetch any webpage as clean markdown
+- `fetch_api_spec_tool` - Fetch API docs or OpenAPI/Swagger specs
+
+## Registered Tools
+
+### fetch_page_as_markdown
+
+Fetches a webpage and returns its content as clean markdown. Automatically handles JavaScript-rendered pages using a two-stage strategy:
+
+1. **Static fetch** (~1s) - Fast HTTP request for regular pages
+2. **Headless browser fallback** (~5-8s) - Automatically used if static fetch returns insufficient content
+
+**Parameters:**
+- `url` (str) - Full URL of the page to fetch (must include https://)
+
+**Returns:**
+- Clean markdown of the page content, or an error message prefixed with `"ERROR:"`
+
+### fetch_api_spec_tool
+
+Fetches API documentation or an OpenAPI/Swagger spec. Smart about content types:
+
+- If the server returns JSON/YAML (`Content-Type: application/json` or similar), returns the raw spec directly
+- Otherwise, returns clean markdown of the docs page
+
+**Parameters:**
+- `url` (str) - URL of the API docs page or raw spec file
+
+**Returns:**
+- Raw spec (JSON/YAML) or clean markdown of the docs page
+
+## Configuration Options
+
+### playwright_first Mode
+
+For known JavaScript-heavy targets (SPAs, Swagger UI, React documentation sites), you can skip the static fetch entirely and go straight to the headless browser:
+
+```python
+from agno import Agent
+from scripts.agno_toolkit import WebToMarkdownTools
+
+# Always use headless browser for reliable rendering
+agent = Agent(tools=[WebToMarkdownTools(playwright_first=True)])
+```
+
+**When to use `playwright_first=True`:**
+- Single-page applications (SPAs)
+- Swagger UI instances
+- React/Vue/Angular documentation sites
+- Any site you know requires JavaScript to render content
+
+**Trade-off:**
+- Slower (~5-8s vs ~1s for static pages)
+- More reliable for JS-heavy content
+- Avoids the cost of trying static fetch first when you know it will fail
+
+## Complete Example
+
+```python
+from agno import Agent
+from scripts.agno_toolkit import WebToMarkdownTools
+
+# Create agent with web-to-markdown tools
+agent = Agent(
+    name="Documentation Assistant",
+    tools=[WebToMarkdownTools()],
+    instructions=[
+        "You help users understand technical documentation.",
+        "When given a URL, fetch it as markdown and summarize the key points.",
+    ],
+)
+
+# Agent automatically uses the tools when needed
+response = agent.run(
+    "Read https://docs.example.com/api and explain how authentication works"
+)
+print(response)
+```
+
+## Example with playwright_first
+
+```python
+from agno import Agent
+from scripts.agno_toolkit import WebToMarkdownTools
+
+# Agent optimized for JavaScript-heavy documentation sites
+agent = Agent(
+    name="API Explorer",
+    tools=[WebToMarkdownTools(playwright_first=True)],
+    instructions=[
+        "You help users explore API documentation.",
+        "Fetch Swagger UI pages and explain available endpoints.",
+    ],
+)
+
+# Will use headless browser immediately for reliable rendering
+response = agent.run(
+    "Fetch https://app.example.com/swagger and list all POST endpoints"
+)
+print(response)
+```
+
+## Error Handling
+
+Errors are returned as strings prefixed with `"ERROR:"` rather than raised exceptions. This means your agent can handle them inline without try/catch blocks:
+
+```python
+# No try/catch needed — errors come back as descriptive strings
+result = agent.run("Fetch https://invalid-url")
+# result will contain: "ERROR: Invalid URL format" (or similar)
+```
+
+Common error scenarios:
+- Invalid URL format
+- Network timeouts
+- Login walls or bot detection
+- Pages that remain empty even after JavaScript execution
+
+## Source Code
+
+The complete Agno toolkit implementation:
+
+```python
+"""
+agno_toolkit.py
+===============
+Agno-specific wrapper for the web-to-markdown skill.
+
+Usage:
+    from scripts.agno_toolkit import WebToMarkdownTools
+
+    agent = Agent(tools=[WebToMarkdownTools()])
+
+    # For known JS-heavy targets (SPAs, Swagger UI):
+    agent = Agent(tools=[WebToMarkdownTools(playwright_first=True)])
+"""
+
+from agno.tools import Toolkit
+from agno.utils.log import logger
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+
+class WebToMarkdownTools(Toolkit):
+    """
+    Agno Toolkit: fetch any webpage and return clean markdown.
+    Handles JS-rendered pages transparently via headless browser fallback.
+    """
+
+    def __init__(self, playwright_first: bool = False):
+        """
+        Args:
+            playwright_first: Always use headless browser instead of trying
+                              a static fetch first. Slower (~5-8s vs ~1s) but
+                              reliable for SPAs and Swagger UI instances.
+        """
+        super().__init__(name="web_to_markdown")
+        self.playwright_first = playwright_first
+        self.register(self.fetch_page_as_markdown)
+        self.register(self.fetch_api_spec_tool)
+
+    def fetch_page_as_markdown(self, url: str) -> str:
+        """
+        Fetch a webpage and return its content as clean markdown.
+
+        Automatically handles JavaScript-rendered pages — if a fast static
+        fetch returns insufficient content, a headless browser is used as
+        a fallback. The agent never needs to manage this distinction.
+
+        Args:
+            url: Full URL of the page to fetch (must include https://)
+
+        Returns:
+            Clean markdown of the page content, or an error message.
+        """
+        logger.info(f"[web-to-markdown] fetch_page_as_markdown: {url}")
+        return fetch_as_markdown(url, playwright_first=self.playwright_first)
+
+    def fetch_api_spec_tool(self, url: str) -> str:
+        """
+        Fetch API documentation or an OpenAPI/Swagger spec.
+
+        Returns raw JSON/YAML if the server provides it directly (useful for
+        OpenAPI specs that agents can parse natively). Otherwise returns clean
+        markdown of the docs page.
+
+        Args:
+            url: URL of the API docs page or raw spec file
+
+        Returns:
+            Raw spec (JSON/YAML) or clean markdown of the docs page.
+        """
+        logger.info(f"[web-to-markdown] fetch_api_spec: {url}")
+        return fetch_api_spec(url)
+```

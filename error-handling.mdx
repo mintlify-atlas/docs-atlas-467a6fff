@@ -1,0 +1,486 @@
+---
+title: Error Handling
+description: Understanding the error-as-string pattern and common error scenarios
+---
+
+## Overview
+
+web-to-markdown uses an **error-as-string pattern** instead of raising exceptions. All errors are returned as strings prefixed with `"ERROR:"`, making them easy for agents to detect and handle inline without try/catch blocks.
+
+## The Error-as-String Pattern
+
+### How It Works
+
+Instead of this:
+```python
+try:
+    markdown = fetch_as_markdown(url)
+    process(markdown)
+except FetchError as e:
+    print(f"Failed: {e}")
+```
+
+You write this:
+```python
+markdown = fetch_as_markdown(url)
+if markdown.startswith("ERROR:"):
+    print(f"Failed: {markdown}")
+else:
+    process(markdown)
+```
+
+### Why This Pattern?
+
+This design is optimized for **agent workflows** where:
+
+1. **Agents don't handle exceptions well**: Most LLM-based agents struggle with try/catch control flow
+2. **Errors are data**: Error messages are useful context that agents can reason about
+3. **No silent failures**: Unlike None or empty strings, "ERROR:" strings are explicit and detectable
+4. **Simplified integration**: Framework tools can return error strings without special exception handling
+
+<Info>
+The error-as-string pattern follows the principle that **errors should be values, not exceptions** when the caller always needs to handle them.
+</Info>
+
+### Implementation Details
+
+From `fetch_as_markdown.py`:
+
+```python
+def fetch_as_markdown(url: str, playwright_first: bool = False) -> str:
+    """
+    Returns:
+        Clean markdown string, or an error message prefixed with "ERROR:"
+    """
+    html = None
+
+    if not playwright_first:
+        html = _static_fetch(url)
+        if html:
+            md = _clean_markdown(_html_to_markdown(_extract_main_content(html)))
+            if not _is_thin_content(md):
+                return md  # ✓ Success case
+            html = None
+
+    html = _playwright_fetch(url)
+
+    if not html:
+        if not PLAYWRIGHT_AVAILABLE:
+            return (  # ✗ Error case 1
+                "ERROR: Page appears JavaScript-rendered but Playwright is not installed. "
+                "Run: pip install playwright && playwright install chromium"
+            )
+        return f"ERROR: Could not fetch {url}. The page may require authentication or block automated access."  # ✗ Error case 2
+
+    md = _clean_markdown(_html_to_markdown(_extract_main_content(html)))
+
+    if _is_thin_content(md):
+        md = _clean_markdown(_html_to_markdown(html))
+
+    if _is_thin_content(md):
+        return (  # ✗ Error case 3
+            f"ERROR: Fetched {url} but content appears to be behind a login wall "
+            "or requires user interaction that cannot be automated."
+        )
+
+    return md  # ✓ Success case
+```
+
+Notice:
+- **No exceptions raised**: All error paths return strings
+- **Consistent prefix**: All errors start with `"ERROR:"`
+- **Actionable messages**: Errors explain what happened and what to do
+
+## Common Error Scenarios
+
+### 1. Playwright Not Installed
+
+**When it happens:**
+- Page requires JavaScript rendering
+- Static fetch returns thin content (&lt;200 chars)
+- Playwright library not installed or Chromium not downloaded
+
+**Error message:**
+```
+ERROR: Page appears JavaScript-rendered but Playwright is not installed. Run: pip install playwright && playwright install chromium
+```
+
+**Code path:**
+```python
+html = _playwright_fetch(url)
+
+if not html:
+    if not PLAYWRIGHT_AVAILABLE:  # ← Triggers here
+        return "ERROR: Page appears JavaScript-rendered but Playwright is not installed..."
+```
+
+**How to fix:**
+```bash
+pip install playwright
+playwright install chromium  # ~200MB download
+```
+
+**Example:**
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+result = fetch_as_markdown("https://petstore.swagger.io")
+
+if result.startswith("ERROR:"):
+    if "Playwright is not installed" in result:
+        print("Please install Playwright to fetch JS-rendered pages")
+        print("Run: pip install playwright && playwright install chromium")
+else:
+    print(result)  # Success — process markdown
+```
+
+<Warning>
+Playwright is **optional** for static pages but **required** for JavaScript-rendered content. The library will attempt static fetch first before checking for Playwright.
+</Warning>
+
+### 2. Login Walls and Authentication
+
+**When it happens:**
+- Page requires user login
+- Content behind authentication
+- Both static and Playwright fetches return thin content
+- Page loaded but shows "Please sign in" message
+
+**Error message:**
+```
+ERROR: Fetched {url} but content appears to be behind a login wall or requires user interaction that cannot be automated.
+```
+
+**Code path:**
+```python
+html = _playwright_fetch(url)  # Successfully fetches page
+
+if html:
+    md = _clean_markdown(_html_to_markdown(_extract_main_content(html)))
+    
+    if _is_thin_content(md):  # Less than 200 chars
+        md = _clean_markdown(_html_to_markdown(html))  # Try raw HTML
+    
+    if _is_thin_content(md):  # ← Still thin, triggers error
+        return "ERROR: ... content appears to be behind a login wall ..."
+```
+
+**Example scenarios:**
+```python
+# Private GitHub repo
+fetch_as_markdown("https://github.com/private-org/private-repo")
+# ERROR: ... behind a login wall ...
+
+# Paywalled article
+fetch_as_markdown("https://premium-news.com/article")
+# ERROR: ... behind a login wall ...
+
+# Admin dashboard
+fetch_as_markdown("https://app.example.com/admin")
+# ERROR: ... behind a login wall ...
+```
+
+**Workarounds:**
+
+1. **Use authenticated HTTP requests** (not supported by default):
+```python
+# Custom implementation with authentication
+import requests
+from scripts.fetch_as_markdown import _extract_main_content, _html_to_markdown, _clean_markdown
+
+def fetch_authenticated(url: str, auth_token: str) -> str:
+    r = requests.get(url, headers={"Authorization": f"Bearer {auth_token}"})
+    r.raise_for_status()
+    html = r.text
+    return _clean_markdown(_html_to_markdown(_extract_main_content(html)))
+```
+
+2. **Request public documentation** instead of authenticated pages
+
+3. **Use API endpoints** that don't require browser-based auth
+
+<Note>
+The library intentionally does not support authentication to keep the API simple and secure. For authenticated content, wrap the underlying functions with your own auth logic.
+</Note>
+
+### 3. Bot Detection and Rate Limiting
+
+**When it happens:**
+- Website blocks automated requests
+- Cloudflare or similar bot protection
+- Rate limiting after multiple requests
+- CAPTCHA challenge presented
+
+**Error message:**
+```
+ERROR: Could not fetch {url}. The page may require authentication or block automated access.
+```
+
+**Code path:**
+```python
+html = _playwright_fetch(url)
+
+if not html:  # ← Playwright returned None (fetch failed)
+    if not PLAYWRIGHT_AVAILABLE:
+        return "ERROR: ... Playwright is not installed ..."
+    return "ERROR: Could not fetch {url}. The page may require authentication or block automated access."
+```
+
+**Example scenarios:**
+```python
+# Cloudflare protected site
+fetch_as_markdown("https://protected.example.com")
+# ERROR: Could not fetch ... may require authentication or block automated access.
+
+# Rate limited after many requests
+for i in range(100):
+    fetch_as_markdown(f"https://api.example.com/docs/endpoint-{i}")
+# Eventually: ERROR: Could not fetch ... block automated access.
+```
+
+**Mitigation strategies:**
+
+1. **Add delays between requests**:
+```python
+import time
+
+for url in urls:
+    markdown = fetch_as_markdown(url)
+    time.sleep(2)  # Be respectful of rate limits
+```
+
+2. **Use playwright_first for consistent User-Agent**:
+```python
+fetch_as_markdown(url, playwright_first=True)
+# Playwright's Chromium appears more like a real browser
+```
+
+3. **Request API access** instead of scraping:
+```python
+# Better: Use official API
+fetch_api_spec("https://api.example.com/openapi.json")
+```
+
+<Tip>
+If you're repeatedly fetching from the same domain, add a 1-2 second delay between requests to avoid triggering rate limits.
+</Tip>
+
+### 4. Network and Timeout Errors
+
+**When it happens:**
+- DNS resolution fails
+- Connection timeout (>15s for static, >30s for Playwright)
+- SSL/TLS certificate errors
+- Server returns 4xx/5xx status codes
+
+**Error message:**
+```
+ERROR: Could not fetch {url}. The page may require authentication or block automated access.
+```
+
+**Implementation:**
+```python
+def _static_fetch(url: str, timeout: int = 15) -> str | None:
+    try:
+        r = requests.get(url, headers={...}, timeout=timeout)
+        r.raise_for_status()  # Raises for 4xx/5xx
+        return r.text
+    except Exception:  # ← Catches all network errors
+        return None
+
+def _playwright_fetch(url: str, wait_ms: int = 3000) -> str | None:
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, wait_until="networkidle", timeout=30000)  # 30s timeout
+            # ...
+    except Exception:  # ← Catches all Playwright errors
+        return None
+```
+
+**Example scenarios:**
+```python
+# Invalid URL
+fetch_as_markdown("https://this-domain-does-not-exist-12345.com")
+# ERROR: Could not fetch ...
+
+# 404 Not Found
+fetch_as_markdown("https://github.com/user/nonexistent-repo")
+# ERROR: Could not fetch ...
+
+# SSL error
+fetch_as_markdown("https://expired-ssl-cert.example.com")
+# ERROR: Could not fetch ...
+```
+
+<Info>
+The library intentionally groups all network errors into a single error message to keep the API simple. Detailed error logging would require exception handling, which breaks the error-as-string pattern.
+</Info>
+
+## Error Detection Patterns
+
+### Simple Check
+```python
+markdown = fetch_as_markdown(url)
+
+if markdown.startswith("ERROR:"):
+    handle_error(markdown)
+else:
+    process_markdown(markdown)
+```
+
+### Specific Error Handling
+```python
+markdown = fetch_as_markdown(url)
+
+if "Playwright is not installed" in markdown:
+    install_playwright()
+    markdown = fetch_as_markdown(url)  # Retry
+elif "login wall" in markdown:
+    log_skipped(url, "requires authentication")
+elif markdown.startswith("ERROR:"):
+    log_error(url, markdown)
+else:
+    process_markdown(markdown)
+```
+
+### Framework Integration
+
+#### LangChain
+```python
+from langchain.tools import tool
+
+@tool
+def fetch_page(url: str) -> str:
+    """Fetch webpage and return markdown. Errors are returned as strings."""
+    result = fetch_as_markdown(url)
+    # Agent can see and reason about error messages
+    return result
+```
+
+#### CrewAI
+```python
+from crewai.tools import BaseTool
+
+class FetchTool(BaseTool):
+    def _run(self, url: str) -> str:
+        result = fetch_as_markdown(url)
+        if result.startswith("ERROR:"):
+            # Optionally log or transform errors
+            return f"Failed to fetch {url}: {result}"
+        return result
+```
+
+#### Agno
+```python
+from scripts.agno_toolkit import WebToMarkdownTools
+
+agent = Agent(tools=[WebToMarkdownTools()])
+
+# Tool returns error strings directly
+# Agent can read and respond to error messages
+```
+
+## Best Practices
+
+### 1. Always Check for Errors
+```python
+# ✓ Good
+markdown = fetch_as_markdown(url)
+if markdown.startswith("ERROR:"):
+    return None
+process(markdown)
+
+# ✗ Bad — assumes success
+markdown = fetch_as_markdown(url)
+process(markdown)  # Might process "ERROR: ..." string
+```
+
+### 2. Log Errors for Debugging
+```python
+import logging
+
+markdown = fetch_as_markdown(url)
+if markdown.startswith("ERROR:"):
+    logging.warning(f"Failed to fetch {url}: {markdown}")
+    return None
+```
+
+### 3. Retry with Different Strategy
+```python
+# Try default strategy first
+markdown = fetch_as_markdown(url)
+
+if "Playwright is not installed" in markdown:
+    # Playwright needed but not available — can't retry
+    return markdown
+elif markdown.startswith("ERROR:"):
+    # Other error — try playwright_first
+    markdown = fetch_as_markdown(url, playwright_first=True)
+
+return markdown
+```
+
+### 4. Graceful Degradation
+```python
+urls = [
+    "https://docs.example.com/page1",
+    "https://docs.example.com/page2",
+    "https://docs.example.com/page3",
+]
+
+results = []
+for url in urls:
+    markdown = fetch_as_markdown(url)
+    if not markdown.startswith("ERROR:"):
+        results.append(markdown)
+    else:
+        print(f"Skipping {url}: {markdown}")
+
+# Continue processing with whatever succeeded
+process_batch(results)
+```
+
+## Error Message Reference
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `ERROR: Page appears JavaScript-rendered but Playwright is not installed...` | JS-rendered page, Playwright missing | `pip install playwright && playwright install chromium` |
+| `ERROR: Could not fetch {url}. The page may require authentication or block automated access.` | Network error, bot block, or rate limit | Check URL, add delays, or use API |
+| `ERROR: Fetched {url} but content appears to be behind a login wall...` | Authentication required | Use public docs or implement custom auth |
+
+## Debugging Tips
+
+### Enable Verbose Logging
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Add custom logging to wrapper
+def fetch_with_debug(url: str, **kwargs) -> str:
+    print(f"Fetching {url} with {kwargs}")
+    result = fetch_as_markdown(url, **kwargs)
+    if result.startswith("ERROR:"):
+        print(f"Error: {result}")
+    else:
+        print(f"Success: {len(result)} chars")
+    return result
+```
+
+### Test in CLI First
+```bash
+# See raw output and errors
+python scripts/fetch_as_markdown.py https://problematic-url.com
+
+# Try playwright_first
+python scripts/fetch_as_markdown.py https://problematic-url.com --playwright-first
+```
+
+### Check Character Count
+```python
+markdown = fetch_as_markdown(url)
+if not markdown.startswith("ERROR:"):
+    chars = len(markdown.replace(" ", "").replace("\n", ""))
+    print(f"Content: {chars} chars (threshold: 200)")
+```

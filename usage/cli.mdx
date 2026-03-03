@@ -1,0 +1,405 @@
+---
+title: CLI Usage
+description: Command-line interface guide for fetching web content as markdown from the terminal
+---
+
+The `fetch_as_markdown.py` script can be run directly from the command line for quick fetches, debugging, or integration into shell scripts and automation workflows.
+
+## Basic Syntax
+
+```bash
+python scripts/fetch_as_markdown.py <url> [options]
+```
+
+## Required Arguments
+
+<ParamField path="url" type="string" required>
+  The full URL to fetch, including the scheme (`https://` or `http://`). Without a scheme, the request will fail.
+</ParamField>
+
+## Optional Flags
+
+### --playwright-first
+
+Skip the static HTTP fetch and go straight to the headless browser.
+
+```bash
+python scripts/fetch_as_markdown.py https://app.example.com/swagger --playwright-first
+```
+
+<Info>
+Use this flag for known JavaScript-heavy targets:
+- Single Page Applications (React, Vue, Angular)
+- Swagger UI / OpenAPI documentation viewers
+- Sites that render entirely client-side
+- Interactive documentation platforms
+</Info>
+
+**When to use:**
+- You know the site requires JavaScript to render
+- Static fetch consistently returns thin/empty content
+- You want to save ~1-2 seconds by skipping the static attempt
+
+### --api-spec
+
+Treat the target as API documentation. Returns raw JSON or YAML if the server provides it.
+
+```bash
+python scripts/fetch_as_markdown.py https://api.example.com/openapi.json --api-spec
+```
+
+**Behavior:**
+1. Sends `Accept: application/json,application/yaml,text/yaml,text/html` header
+2. Checks response `Content-Type`
+3. If `application/json`, `yaml`, or `text/plain` → returns raw response body
+4. Otherwise → falls back to markdown conversion via `fetch_as_markdown()`
+
+### --output / -o
+
+Write output to a file instead of stdout.
+
+```bash
+python scripts/fetch_as_markdown.py https://docs.example.com --output docs.md
+```
+
+Short form:
+```bash
+python scripts/fetch_as_markdown.py https://docs.example.com -o docs.md
+```
+
+**Output:**
+- File is written with UTF-8 encoding
+- Prints confirmation message: `Written to docs.md`
+- Creates parent directories if needed (standard Python `open()` behavior)
+
+## Usage Examples
+
+<Tabs>
+  <Tab title="Basic Fetch">
+    Fetch a standard documentation page:
+    
+    ```bash
+    python scripts/fetch_as_markdown.py https://docs.python.org/3/library/asyncio.html
+    ```
+    
+    Output goes to stdout (terminal). Fast static fetch will be attempted first.
+  </Tab>
+  
+  <Tab title="Save to File">
+    Fetch and save directly to a file:
+    
+    ```bash
+    python scripts/fetch_as_markdown.py https://docs.example.com/getting-started -o getting-started.md
+    ```
+    
+    Console output:
+    ```
+    Written to getting-started.md
+    ```
+  </Tab>
+  
+  <Tab title="JavaScript Sites">
+    Fetch a React/Vue/Angular documentation site:
+    
+    ```bash
+    python scripts/fetch_as_markdown.py https://react.dev/reference/react/useState --playwright-first
+    ```
+    
+    Skips static fetch, uses headless Chromium immediately.
+  </Tab>
+  
+  <Tab title="API Specs">
+    Fetch an OpenAPI specification:
+    
+    ```bash
+    python scripts/fetch_as_markdown.py https://api.github.com/openapi.json --api-spec -o github-spec.json
+    ```
+    
+    Returns raw JSON directly without markdown conversion.
+  </Tab>
+</Tabs>
+
+## Combining Flags
+
+<CodeGroup>
+```bash Playwright + output file
+python scripts/fetch_as_markdown.py \
+  https://app.example.com/docs \
+  --playwright-first \
+  --output docs.md
+```
+
+```bash API spec + output file
+python scripts/fetch_as_markdown.py \
+  https://api.example.com/openapi.yaml \
+  --api-spec \
+  -o spec.yaml
+```
+
+```bash All flags
+# Note: --playwright-first is implicit with --api-spec for HTML responses
+python scripts/fetch_as_markdown.py \
+  https://api.example.com/swagger-ui \
+  --api-spec \
+  --playwright-first \
+  -o api-docs.md
+```
+</CodeGroup>
+
+## Shell Integration
+
+### Pipe to Other Tools
+
+```bash
+# Count words in documentation
+python scripts/fetch_as_markdown.py https://docs.example.com | wc -w
+
+# Search for specific content
+python scripts/fetch_as_markdown.py https://docs.example.com | grep -i "authentication"
+
+# Convert to HTML with pandoc
+python scripts/fetch_as_markdown.py https://docs.example.com | pandoc -f markdown -t html -o output.html
+```
+
+### Batch Processing Script
+
+```bash
+#!/bin/bash
+# fetch-docs.sh - Fetch multiple documentation pages
+
+URLS=(
+  "https://docs.example.com/intro"
+  "https://docs.example.com/api-reference"
+  "https://docs.example.com/guides"
+)
+
+for url in "${URLS[@]}"; do
+  filename=$(basename "$url").md
+  echo "Fetching $url..."
+  python scripts/fetch_as_markdown.py "$url" -o "$filename"
+done
+
+echo "Done! Fetched ${#URLS[@]} pages."
+```
+
+### Error Handling in Scripts
+
+```bash
+#!/bin/bash
+# fetch-with-retry.sh - Fetch with error handling
+
+URL="$1"
+OUTPUT="$2"
+
+if [ -z "$URL" ] || [ -z "$OUTPUT" ]; then
+  echo "Usage: $0 <url> <output-file>"
+  exit 1
+fi
+
+# Capture output
+RESULT=$(python scripts/fetch_as_markdown.py "$URL" 2>&1)
+
+# Check for errors
+if echo "$RESULT" | grep -q "^ERROR:"; then
+  echo "Failed to fetch $URL:"
+  echo "$RESULT"
+  exit 1
+fi
+
+# Save successful result
+echo "$RESULT" > "$OUTPUT"
+echo "✓ Saved to $OUTPUT"
+```
+
+## Makefile Integration
+
+```makefile
+# Makefile example for documentation pipeline
+
+.PHONY: fetch-docs clean
+
+DOCS_DIR := docs/fetched
+URLS := https://docs.example.com/api https://docs.example.com/guide
+
+$(DOCS_DIR)/%.md:
+	@mkdir -p $(DOCS_DIR)
+	python scripts/fetch_as_markdown.py $* -o $@
+
+fetch-docs:
+	@for url in $(URLS); do \
+		filename=$$(basename $$url).md; \
+		python scripts/fetch_as_markdown.py $$url -o $(DOCS_DIR)/$$filename; \
+	done
+
+clean:
+	rm -rf $(DOCS_DIR)
+```
+
+## Output Format
+
+### Successful Fetch
+
+With `--output` flag:
+```
+Written to docs.md
+```
+
+Without `--output` flag:
+```markdown
+# Page Title
+
+Clean markdown content with boilerplate stripped...
+
+## Section 1
+
+Content here...
+```
+
+### Error Output
+
+Errors are written to stdout (not stderr) with `ERROR:` prefix:
+
+```bash
+python scripts/fetch_as_markdown.py https://invalid-url.example.com
+```
+
+```
+ERROR: Could not fetch https://invalid-url.example.com. The page may require authentication or block automated access.
+```
+
+<Note>
+Error messages go to stdout, not stderr, so agents and scripts can parse them inline without separate error stream handling.
+</Note>
+
+## Help Command
+
+View all available options:
+
+```bash
+python scripts/fetch_as_markdown.py --help
+```
+
+Output:
+```
+usage: fetch_as_markdown.py [-h] [--playwright-first] [--api-spec] [--output FILE] url
+
+Fetch a URL and return clean markdown.
+
+positional arguments:
+  url                   URL to fetch (include https://)
+
+options:
+  -h, --help            show this help message and exit
+  --playwright-first    Skip static fetch; use headless browser immediately
+  --api-spec            Treat as API docs — return raw JSON/YAML if available
+  --output FILE, -o FILE
+                        Write output to file instead of stdout
+```
+
+## Performance Comparison
+
+<Tabs>
+  <Tab title="Static Fetch">
+    ```bash
+    time python scripts/fetch_as_markdown.py https://docs.example.com/intro
+    ```
+    
+    Typical duration: **0.8-1.5 seconds**
+    
+    Used for:
+    - Server-rendered HTML pages
+    - Static documentation sites
+    - Traditional web pages
+  </Tab>
+  
+  <Tab title="Playwright Fallback">
+    ```bash
+    time python scripts/fetch_as_markdown.py https://react.dev/reference/react
+    ```
+    
+    Typical duration: **5-8 seconds** (browser launch + network idle + JS execution)
+    
+    Triggered when:
+    - Static fetch returns &lt;200 chars
+    - Page is JavaScript-rendered
+    - Content loads dynamically
+  </Tab>
+  
+  <Tab title="Playwright First">
+    ```bash
+    time python scripts/fetch_as_markdown.py https://react.dev/reference/react --playwright-first
+    ```
+    
+    Typical duration: **5-8 seconds** (same as fallback, but no static attempt)
+    
+    Saves: **~1 second** when you know static fetch will fail
+  </Tab>
+</Tabs>
+
+## Common Use Cases
+
+### 1. Quick Documentation Check
+
+```bash
+python scripts/fetch_as_markdown.py https://docs.example.com/api | less
+```
+
+### 2. Save for Agent Context
+
+```bash
+python scripts/fetch_as_markdown.py https://docs.stripe.com/api -o context/stripe-api.md
+```
+
+### 3. Compare Documentation Versions
+
+```bash
+python scripts/fetch_as_markdown.py https://docs.example.com/v2/api -o v2.md
+python scripts/fetch_as_markdown.py https://docs.example.com/v3/api -o v3.md
+diff v2.md v3.md
+```
+
+### 4. Build Documentation Mirror
+
+```bash
+#!/bin/bash
+BASE_URL="https://docs.example.com"
+PAGES=("intro" "quickstart" "api-reference" "guides/authentication")
+
+for page in "${PAGES[@]}"; do
+  mkdir -p "mirror/$(dirname "$page")"
+  python scripts/fetch_as_markdown.py "$BASE_URL/$page" \
+    -o "mirror/$page.md"
+done
+```
+
+## Environment Variables
+
+The script doesn't currently use environment variables, but you can create wrapper scripts:
+
+```bash
+#!/bin/bash
+# fetch-wrapper.sh - Add default options via wrapper
+
+DEFAULT_FLAGS="--playwright-first"
+python scripts/fetch_as_markdown.py "$@" $DEFAULT_FLAGS
+```
+
+## Exit Codes
+
+The script currently doesn't use exit codes for different error types. All errors return a message with the `ERROR:` prefix to stdout.
+
+For scripting, check output content:
+
+```bash
+OUTPUT=$(python scripts/fetch_as_markdown.py "$URL")
+if [[ "$OUTPUT" == ERROR:* ]]; then
+  echo "Fetch failed"
+  exit 1
+fi
+```
+
+## See Also
+
+- [Python API](/usage/python-api) - Using functions directly in Python code
+- [Framework Adapters](/usage/framework-adapters) - Integration with agent frameworks
+- [How It Works](/how-it-works) - Understanding the two-stage fetch strategy

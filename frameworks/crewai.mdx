@@ -1,0 +1,411 @@
+---
+title: CrewAI Integration
+description: Use web-to-markdown with CrewAI using the BaseTool pattern
+---
+
+The CrewAI integration uses the `BaseTool` class to create tools that can be used with CrewAI agents and crews.
+
+## Installation
+
+<Steps>
+  <Step title="Install dependencies">
+    ```bash
+    pip install crewai requests readability-lxml html2text playwright
+    ```
+  </Step>
+  
+  <Step title="Install Chromium (one-time)">
+    Required only for JavaScript-heavy pages. This is a ~200MB download.
+    ```bash
+    playwright install chromium
+    ```
+    
+    If you skip this step, the tools will work fine for static pages. When they encounter a JS-rendered page without Playwright installed, the error message tells you exactly what to run.
+  </Step>
+</Steps>
+
+## Basic Tool Implementation
+
+```python
+from crewai.tools import BaseTool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+class FetchPageAsMarkdownTool(BaseTool):
+    name: str = "Fetch Page as Markdown"
+    description: str = (
+        "Fetch a webpage and return clean markdown. "
+        "Handles JavaScript-rendered pages automatically via headless browser fallback."
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_as_markdown(url)
+
+class FetchApiSpecTool(BaseTool):
+    name: str = "Fetch API Spec"
+    description: str = (
+        "Fetch API documentation or an OpenAPI/Swagger spec. "
+        "Returns raw JSON/YAML if available, clean markdown otherwise."
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_api_spec(url)
+```
+
+## Using with CrewAI Agents
+
+### Single Agent Example
+
+```python
+from crewai import Agent, Task, Crew
+from crewai.tools import BaseTool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# Define tools
+class FetchPageAsMarkdownTool(BaseTool):
+    name: str = "Fetch Page as Markdown"
+    description: str = (
+        "Fetch a webpage and return clean markdown. "
+        "Handles JavaScript-rendered pages automatically via headless browser fallback."
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_as_markdown(url)
+
+class FetchApiSpecTool(BaseTool):
+    name: str = "Fetch API Spec"
+    description: str = (
+        "Fetch API documentation or an OpenAPI/Swagger spec. "
+        "Returns raw JSON/YAML if available, clean markdown otherwise."
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_api_spec(url)
+
+# Create agent with tools
+docs_agent = Agent(
+    role="Documentation Analyst",
+    goal="Read and analyze technical documentation from the web",
+    backstory="You are an expert at reading technical documentation and extracting key information.",
+    tools=[FetchPageAsMarkdownTool(), FetchApiSpecTool()],
+    verbose=True
+)
+
+# Create task
+task = Task(
+    description="Read https://docs.example.com/api and summarize the authentication methods",
+    agent=docs_agent,
+    expected_output="A clear summary of all authentication methods supported by the API"
+)
+
+# Create and run crew
+crew = Crew(
+    agents=[docs_agent],
+    tasks=[task],
+    verbose=True
+)
+
+result = crew.kickoff()
+print(result)
+```
+
+### Multi-Agent Crew Example
+
+```python
+from crewai import Agent, Task, Crew
+from crewai.tools import BaseTool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# Define tools
+class FetchPageAsMarkdownTool(BaseTool):
+    name: str = "Fetch Page as Markdown"
+    description: str = (
+        "Fetch a webpage and return clean markdown. "
+        "Handles JavaScript-rendered pages automatically via headless browser fallback."
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_as_markdown(url)
+
+class FetchApiSpecTool(BaseTool):
+    name: str = "Fetch API Spec"
+    description: str = (
+        "Fetch API documentation or an OpenAPI/Swagger spec. "
+        "Returns raw JSON/YAML if available, clean markdown otherwise."
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_api_spec(url)
+
+# Create specialized agents
+researcher = Agent(
+    role="API Researcher",
+    goal="Fetch and read API documentation from various sources",
+    backstory="You specialize in finding and reading technical documentation.",
+    tools=[FetchPageAsMarkdownTool(), FetchApiSpecTool()],
+    verbose=True
+)
+
+analyst = Agent(
+    role="Documentation Analyst",
+    goal="Analyze API documentation and extract key insights",
+    backstory="You are an expert at understanding API specifications and explaining them clearly.",
+    verbose=True
+)
+
+# Create tasks
+research_task = Task(
+    description="Fetch the API documentation from https://docs.example.com/api and https://api.example.com/openapi.json",
+    agent=researcher,
+    expected_output="Complete API documentation in markdown format and raw OpenAPI spec"
+)
+
+analysis_task = Task(
+    description="Analyze the API documentation and create a comprehensive guide covering authentication, rate limits, and main endpoints",
+    agent=analyst,
+    expected_output="A detailed guide with sections on authentication, rate limits, and key endpoints",
+    context=[research_task]  # This task depends on the research task
+)
+
+# Create and run crew
+crew = Crew(
+    agents=[researcher, analyst],
+    tasks=[research_task, analysis_task],
+    verbose=True
+)
+
+result = crew.kickoff()
+print(result)
+```
+
+## Tool Descriptions
+
+### FetchPageAsMarkdownTool
+
+Fetches a webpage and returns its content as clean markdown. Automatically handles JavaScript-rendered pages using a two-stage strategy:
+
+1. **Static fetch** (~1s) - Fast HTTP request for regular pages
+2. **Headless browser fallback** (~5-8s) - Automatically used if static fetch returns insufficient content
+
+**Parameters:**
+- `url` (str) - Full URL of the page to fetch (must include https://)
+
+**Returns:**
+- Clean markdown of the page content, or an error message prefixed with `"ERROR:"`
+
+### FetchApiSpecTool
+
+Fetches API documentation or an OpenAPI/Swagger spec. Smart about content types:
+
+- If the server returns JSON/YAML (`Content-Type: application/json` or similar), returns the raw spec directly
+- Otherwise, returns clean markdown of the docs page
+
+**Parameters:**
+- `url` (str) - URL of the API docs page or raw spec file
+
+**Returns:**
+- Raw spec (JSON/YAML) or clean markdown of the docs page
+
+## Advanced Configuration
+
+### Tool with playwright_first Option
+
+For known JavaScript-heavy targets (SPAs, Swagger UI, React documentation sites), you can create a tool variant that always uses the headless browser:
+
+```python
+from crewai.tools import BaseTool
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+class FetchJSPageTool(BaseTool):
+    name: str = "Fetch JavaScript Page"
+    description: str = (
+        "Fetch a JavaScript-heavy webpage using headless browser. "
+        "Use this for SPAs, Swagger UI, or React documentation sites."
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_as_markdown(url, playwright_first=True)
+```
+
+**When to use `playwright_first=True`:**
+- Single-page applications (SPAs)
+- Swagger UI instances
+- React/Vue/Angular documentation sites
+- Any site you know requires JavaScript to render content
+
+### Tool with Custom Parameters
+
+You can create more sophisticated tools that accept additional configuration:
+
+```python
+from crewai.tools import BaseTool
+from scripts.fetch_as_markdown import fetch_as_markdown
+from typing import Optional
+
+class ConfigurableFetchTool(BaseTool):
+    name: str = "Configurable Page Fetch"
+    description: str = (
+        "Fetch a webpage with optional browser-first mode. "
+        "Format: url|playwright_first (e.g., 'https://example.com|true')"
+    )
+
+    def _run(self, url_config: str) -> str:
+        parts = url_config.split("|")
+        url = parts[0].strip()
+        playwright_first = len(parts) > 1 and parts[1].strip().lower() == "true"
+        return fetch_as_markdown(url, playwright_first=playwright_first)
+```
+
+## Error Handling
+
+Errors are returned as strings prefixed with `"ERROR:"` rather than raised exceptions. This means your agents can handle them inline:
+
+```python
+from crewai import Agent, Task, Crew
+from crewai.tools import BaseTool
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+class RobustFetchTool(BaseTool):
+    name: str = "Robust Page Fetch"
+    description: str = "Fetch a webpage and return clean markdown. Reports errors clearly."
+
+    def _run(self, url: str) -> str:
+        result = fetch_as_markdown(url)
+        if result.startswith("ERROR:"):
+            return f"Failed to fetch {url}: {result}"
+        return result
+```
+
+Common error scenarios:
+- Invalid URL format
+- Network timeouts
+- Login walls or bot detection
+- Pages that remain empty even after JavaScript execution
+
+## Complete Production Example
+
+```python
+from crewai import Agent, Task, Crew, Process
+from crewai.tools import BaseTool
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+# Define production-ready tools
+class FetchPageAsMarkdownTool(BaseTool):
+    name: str = "Fetch Page as Markdown"
+    description: str = (
+        "Fetch a webpage and return clean markdown. "
+        "Handles JavaScript-rendered pages automatically via headless browser fallback. "
+        "Input: Full URL including https://. "
+        "Output: Clean markdown or error message starting with ERROR:"
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_as_markdown(url)
+
+class FetchApiSpecTool(BaseTool):
+    name: str = "Fetch API Spec"
+    description: str = (
+        "Fetch API documentation or an OpenAPI/Swagger spec. "
+        "Returns raw JSON/YAML if available, clean markdown otherwise. "
+        "Input: URL of API docs or spec file. "
+        "Output: Raw spec (JSON/YAML) or markdown content."
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_api_spec(url)
+
+class FetchJSPageTool(BaseTool):
+    name: str = "Fetch JavaScript Page"
+    description: str = (
+        "Fetch a JavaScript-heavy webpage using headless browser. "
+        "Use this for SPAs, Swagger UI, or React documentation sites. "
+        "Slower but more reliable for JS-rendered content."
+    )
+
+    def _run(self, url: str) -> str:
+        return fetch_as_markdown(url, playwright_first=True)
+
+# Create specialized agents
+researcher = Agent(
+    role="Technical Documentation Researcher",
+    goal="Fetch and collect technical documentation from various web sources",
+    backstory=(
+        "You are an expert researcher who specializes in finding and reading "
+        "technical documentation. You know when to use standard fetching vs "
+        "browser-based fetching for JavaScript-heavy sites."
+    ),
+    tools=[FetchPageAsMarkdownTool(), FetchApiSpecTool(), FetchJSPageTool()],
+    verbose=True
+)
+
+analyst = Agent(
+    role="API Documentation Analyst",
+    goal="Analyze API documentation and create clear, comprehensive guides",
+    backstory=(
+        "You are an expert at understanding complex API specifications and "
+        "explaining them in clear, simple terms. You focus on authentication, "
+        "rate limits, error handling, and key endpoints."
+    ),
+    verbose=True
+)
+
+writer = Agent(
+    role="Technical Writer",
+    goal="Create polished documentation and integration guides",
+    backstory=(
+        "You are a skilled technical writer who excels at creating clear, "
+        "well-structured documentation with code examples and best practices."
+    ),
+    verbose=True
+)
+
+# Create workflow tasks
+research_task = Task(
+    description=(
+        "Research the Example API by fetching documentation from these sources:\n"
+        "1. Main docs: https://docs.example.com/api\n"
+        "2. OpenAPI spec: https://api.example.com/openapi.json\n"
+        "3. Swagger UI: https://api.example.com/swagger (use JS fetch tool)"
+    ),
+    agent=researcher,
+    expected_output="Complete API documentation including markdown docs and raw OpenAPI spec"
+)
+
+analysis_task = Task(
+    description=(
+        "Analyze the fetched API documentation and extract:\n"
+        "- All authentication methods\n"
+        "- Rate limiting policies\n"
+        "- Error response formats\n"
+        "- Key endpoints and their purposes"
+    ),
+    agent=analyst,
+    expected_output="Structured analysis with sections for auth, rate limits, errors, and endpoints",
+    context=[research_task]
+)
+
+writing_task = Task(
+    description=(
+        "Create a comprehensive integration guide that includes:\n"
+        "- Quick start section\n"
+        "- Authentication setup with code examples\n"
+        "- Rate limiting best practices\n"
+        "- Error handling patterns\n"
+        "- Example requests for main endpoints"
+    ),
+    agent=writer,
+    expected_output="Publication-ready integration guide in markdown format",
+    context=[analysis_task]
+)
+
+# Create and run crew with sequential process
+crew = Crew(
+    agents=[researcher, analyst, writer],
+    tasks=[research_task, analysis_task, writing_task],
+    process=Process.sequential,
+    verbose=True
+)
+
+result = crew.kickoff()
+print("\n=== Final Integration Guide ===")
+print(result)
+```

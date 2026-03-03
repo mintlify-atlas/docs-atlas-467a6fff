@@ -1,0 +1,325 @@
+---
+title: Python API
+description: Complete guide to using fetch_as_markdown and fetch_api_spec in your Python code
+---
+
+The Python API provides two main functions for fetching web content: `fetch_as_markdown()` for general webpage fetching and `fetch_api_spec()` for API documentation.
+
+## Importing
+
+Import the functions directly from the script:
+
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+```
+
+## fetch_as_markdown
+
+### Function Signature
+
+```python
+def fetch_as_markdown(url: str, playwright_first: bool = False) -> str:
+    """
+    Fetch a URL and return clean markdown.
+
+    Args:
+        url:              Full URL including scheme (https://...)
+        playwright_first: Skip static fetch; go straight to headless browser.
+                          Use for known JS-heavy targets (SPAs, Swagger UI, etc.)
+
+    Returns:
+        Clean markdown string, or an error message prefixed with "ERROR:"
+    """
+```
+
+### Parameters
+
+<ParamField path="url" type="str" required>
+  Full URL including the scheme (must start with `https://` or `http://`)
+</ParamField>
+
+<ParamField path="playwright_first" type="bool" default="False">
+  When `True`, skips the fast static HTTP request and goes directly to the headless browser. Use this for known JavaScript-heavy targets like SPAs, Swagger UI, or React documentation sites.
+</ParamField>
+
+### Return Value
+
+Returns a string containing:
+- **Clean markdown** on success (60-80% fewer tokens than raw HTML)
+- **Error message** prefixed with `"ERROR:"` on failure
+
+<Note>
+Errors are returned as strings rather than raised exceptions, so agents can handle them inline without try/catch blocks.
+</Note>
+
+### Basic Usage
+
+<CodeGroup>
+```python Simple fetch
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+markdown = fetch_as_markdown("https://docs.example.com/api")
+print(markdown)
+```
+
+```python With error handling
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+markdown = fetch_as_markdown("https://docs.example.com/api")
+
+if markdown.startswith("ERROR:"):
+    print(f"Failed to fetch: {markdown}")
+else:
+    print(f"Success! Got {len(markdown)} chars of markdown")
+```
+
+```python JavaScript-heavy sites
+from scripts.fetch_as_markdown import fetch_as_markdown
+
+# Skip static fetch for known SPAs
+markdown = fetch_as_markdown(
+    "https://app.example.com/swagger",
+    playwright_first=True
+)
+```
+</CodeGroup>
+
+### How It Works
+
+The function uses a two-stage fetch strategy:
+
+1. **Static fetch** (default, ~1s)
+   - Fast HTTP request with browser-like User-Agent
+   - Applies readability algorithm to strip nav/ads/sidebars
+   - Converts to markdown
+   - If ≥200 chars of real text, returns immediately
+
+2. **Playwright fallback** (if content is thin, ~5-8s)
+   - Launches headless Chromium
+   - Waits for network idle + 3 seconds for JS frameworks
+   - Same readability → markdown pipeline
+   - If still thin, returns error message
+
+<Tip>
+The 200-character threshold (after whitespace collapse) catches JavaScript-gated shells without falsely flagging legitimately short pages.
+</Tip>
+
+### Error Messages
+
+<Tabs>
+  <Tab title="Missing Playwright">
+    ```
+    ERROR: Page appears JavaScript-rendered but Playwright is not installed. 
+    Run: pip install playwright && playwright install chromium
+    ```
+    
+    Returned when static fetch gets thin content but Playwright isn't available for the browser fallback.
+  </Tab>
+  
+  <Tab title="Fetch Failed">
+    ```
+    ERROR: Could not fetch https://example.com. The page may require 
+    authentication or block automated access.
+    ```
+    
+    Returned when the headless browser cannot access the page (network error, bot detection, etc.).
+  </Tab>
+  
+  <Tab title="Login Wall">
+    ```
+    ERROR: Fetched https://example.com but content appears to be behind a 
+    login wall or requires user interaction that cannot be automated.
+    ```
+    
+    Returned when Playwright successfully loads the page but still gets thin/empty content after rendering.
+  </Tab>
+</Tabs>
+
+## fetch_api_spec
+
+### Function Signature
+
+```python
+def fetch_api_spec(url: str) -> str:
+    """
+    Fetch API documentation or an OpenAPI/Swagger spec.
+
+    Checks the Content-Type header first — if the server returns raw JSON or YAML,
+    that's returned directly since agents can often work with OpenAPI specs natively
+    without needing markdown conversion. Falls back to fetch_as_markdown otherwise.
+
+    Args:
+        url: URL of the API docs page or raw spec file
+
+    Returns:
+        Raw spec (JSON/YAML) or clean markdown of the docs page
+    """
+```
+
+### Parameters
+
+<ParamField path="url" type="str" required>
+  URL of the API documentation page or raw OpenAPI/Swagger spec file
+</ParamField>
+
+### Return Value
+
+Returns a string containing:
+- **Raw JSON/YAML** if the server returns `Content-Type: application/json`, `application/yaml`, or `text/yaml`
+- **Clean markdown** from `fetch_as_markdown()` otherwise
+
+### Usage Examples
+
+<CodeGroup>
+```python Raw OpenAPI spec
+from scripts.fetch_as_markdown import fetch_api_spec
+
+# Server returns application/json → gets raw JSON
+spec = fetch_api_spec("https://api.example.com/openapi.json")
+
+import json
+data = json.loads(spec)  # Direct parsing works
+print(f"API version: {data['info']['version']}")
+```
+
+```python Swagger UI page
+from scripts.fetch_as_markdown import fetch_api_spec
+
+# Server returns HTML → gets markdown conversion
+docs = fetch_api_spec("https://api.example.com/docs")
+
+# Will use Playwright if needed (Swagger UI is JS-rendered)
+print(docs)
+```
+
+```python YAML spec
+from scripts.fetch_as_markdown import fetch_api_spec
+import yaml
+
+# Server returns text/yaml → gets raw YAML
+spec = fetch_api_spec("https://api.example.com/openapi.yaml")
+
+data = yaml.safe_load(spec)
+print(f"Endpoints: {len(data['paths'])}")
+```
+</CodeGroup>
+
+### When to Use
+
+Use `fetch_api_spec()` instead of `fetch_as_markdown()` when:
+
+- Fetching OpenAPI/Swagger specifications
+- The target URL might return raw JSON/YAML
+- You want agents to work with native spec formats
+- Dealing with API documentation that may be in multiple formats
+
+<Note>
+If `fetch_api_spec()` falls back to markdown conversion (because the server returned HTML), it automatically uses `playwright_first=True` behavior since API docs are often JavaScript-rendered.
+</Note>
+
+## Advanced Examples
+
+### Batch Processing
+
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown
+from concurrent.futures import ThreadPoolExecutor
+
+urls = [
+    "https://docs.example.com/intro",
+    "https://docs.example.com/api-reference",
+    "https://docs.example.com/guides",
+]
+
+def fetch_and_save(url: str) -> None:
+    filename = url.split("/")[-1] + ".md"
+    markdown = fetch_as_markdown(url)
+    
+    if not markdown.startswith("ERROR:"):
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(markdown)
+        print(f"✓ Saved {filename}")
+    else:
+        print(f"✗ Failed: {url} - {markdown}")
+
+with ThreadPoolExecutor(max_workers=3) as executor:
+    executor.map(fetch_and_save, urls)
+```
+
+### Integration with Agent Systems
+
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown, fetch_api_spec
+
+class WebResearchAgent:
+    def fetch_documentation(self, url: str, is_api: bool = False) -> dict:
+        """
+        Fetch documentation and return structured result.
+        """
+        if is_api:
+            content = fetch_api_spec(url)
+        else:
+            content = fetch_as_markdown(url)
+        
+        return {
+            "url": url,
+            "success": not content.startswith("ERROR:"),
+            "content": content,
+            "tokens": len(content.split()),
+        }
+
+agent = WebResearchAgent()
+result = agent.fetch_documentation("https://docs.python.org/3/library/asyncio.html")
+
+if result["success"]:
+    print(f"Fetched {result['tokens']} tokens from {result['url']}")
+```
+
+### Custom Content Validation
+
+```python
+from scripts.fetch_as_markdown import fetch_as_markdown
+import re
+
+def fetch_with_validation(url: str, required_keywords: list[str]) -> str:
+    """
+    Fetch markdown and validate it contains expected content.
+    """
+    markdown = fetch_as_markdown(url)
+    
+    if markdown.startswith("ERROR:"):
+        return markdown
+    
+    # Check for required keywords
+    missing = [kw for kw in required_keywords if kw.lower() not in markdown.lower()]
+    
+    if missing:
+        return f"ERROR: Content missing required keywords: {', '.join(missing)}"
+    
+    return markdown
+
+# Validate API docs contain authentication info
+docs = fetch_with_validation(
+    "https://api.example.com/docs",
+    required_keywords=["authentication", "API key", "authorization"]
+)
+```
+
+## Dependencies
+
+Ensure these packages are installed:
+
+```bash
+pip install requests readability-lxml html2text playwright
+playwright install chromium  # ~200MB one-time download
+```
+
+<Tip>
+Playwright is optional. If a JavaScript-rendered page is encountered without it, you'll get a clear error message telling you exactly what to install.
+</Tip>
+
+## See Also
+
+- [CLI Usage](/usage/cli) - Command-line interface examples
+- [Framework Adapters](/usage/framework-adapters) - Using with LangChain, CrewAI, etc.
+- [How It Works](/how-it-works) - How the two-stage fetch works
